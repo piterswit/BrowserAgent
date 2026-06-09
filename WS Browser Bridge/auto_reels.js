@@ -26,6 +26,40 @@ function keyNav(key){
   document.dispatchEvent(new KeyboardEvent("keyup",{key,bubbles:true}));
 }
 
+
+// ===== 点击取消静音按钮 =====
+function clickIfUnmute() {
+  const keywords = [
+    "取消静音",   // 简体
+    "取消靜音",   // 繁体
+    "unmute"      // 英文
+  ];
+
+  const buttons = document.querySelectorAll('[role="button"]');
+
+  for (const btn of buttons) {
+    const text = (
+      btn.getAttribute("aria-label") ||
+      btn.innerText ||
+      ""
+    ).trim().toLowerCase();
+
+    if (
+      keywords.some(k =>
+        text.includes(k.toLowerCase())
+      )
+    ) {
+      btn.click();
+      console.log("已点击:", text);
+      return true;
+    }
+  }
+
+  console.log("未找到匹配按钮");
+  return false;
+}
+
+
 // ===== reels 导航 =====
 // 找到真正可滚动容器
 let __scroller = null;
@@ -95,8 +129,11 @@ async function autoReels(){
   const ctrl={run:true};
   window.__reelCtrl=ctrl;
 
-  console.log('开始自动浏览 Reels...');
+  // 等待加载，并点击取消静音
+  await sleep(rand(3000,6180));
+  clickIfUnmute();
 
+  console.log('开始自动浏览 Reels...');
   while(ctrl.run){
     if(document.hidden){
       await sleep(2000);
@@ -109,15 +146,20 @@ async function autoReels(){
         await sleep(rand(2000,15000));
     // await maybeLike();
 
-    if(Math.random()<0.1){
+    if(Math.random()<0.03){
+      location.reload();
+      return;
+    }
+
+    if(Math.random()<0.04){
       prevReel();
     }else{
       nextReel();
     }
 
-    if(Math.random()<0.06)
+    if(Math.random()<0.04)
       await doLike();
-    if(Math.random()<0.06)
+    if(Math.random()<0.04)
       await sleep(rand(8000,45000));
   }
 }

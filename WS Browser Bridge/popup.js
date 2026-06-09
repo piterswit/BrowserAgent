@@ -8,3 +8,6 @@ document.getElementById("btn3").onclick=()=>{
   chrome.runtime.sendMessage({cmd:"auto_reels"});
 };
 
+document.getElementById("btn4").onclick=()=>{
+  chrome.runtime.sendMessage({cmd:"auto_group"});
+};

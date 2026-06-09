@@ -3,12 +3,14 @@
 
 import asyncio
 import json
+import time
 import threading
 import tkinter as tk
 from tkinter import ttk
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
+import traceback
 
 PORT_RANGE = range(8765, 8770)
 
@@ -41,9 +43,11 @@ class App:
         self.clients = {}
         self.ports_name = {}
         self.ports = {}
+        self.last_seen = {}  # 心跳包
 
         self.build_ui()
         self.scan()
+        self.root.after(10000, self.check_alive)
 
     def build_ui(self):
         frm = tb.Frame(self.root)
@@ -55,6 +59,7 @@ class App:
         tb.Button(btnf, text="刷新", command=self.refresh).pack(side="left", padx=6)
         tb.Button(btnf, text="自动活跃", command=self.scroll).pack(side="left", padx=6)
         tb.Button(btnf, text="活跃Reels", command=self.auto_reels).pack(side="left", padx=6)
+        tb.Button(btnf, text="活跃小组", command=self.auto_group).pack(side="left", padx=6)
         tb.Button(btnf, text="停止活跃", command=self.stop_scroll).pack(side="left", padx=6)
 
         frame = tb.Frame(frm)
@@ -79,22 +84,25 @@ class App:
 
     def remove_client(self, client_id):
         name = None
-        # 反向查找 name
+        # 找到名字
         for k, v in list(self.ports_name.items()):
             if v == client_id:
                 name = k
-                del self.ports_name[k]
                 break
-        
+
+        # 删除数据
+        if name:
+            self.ports_name.pop(name, None)
+
         self.clients.pop(client_id, None)
         self.ports.pop(client_id, None)
 
-        # 切换到主线程更新UI
-        self.root.after(0, lambda: self._remove_client_ui(client_id))
+        # 用名字删UI
+        self.root.after(0, lambda n=name: self._remove_client_ui(n))
 
-    def _remove_client_ui(self, client_id):
+    def _remove_client_ui(self, name):
         for item in self.list_view.get_children():
-            if self.get_item_id(item) == client_id:
+            if self.get_item_name(item) == name:
                 self.list_view.delete(item)
                 break
 
@@ -161,6 +169,13 @@ class App:
             async for msg in ws:
                 data = json.loads(msg)
 
+                # 心跳包
+                if data.get("type") == "heartbeat":
+                    cid = data.get("client_id")
+                    if cid:
+                        self.last_seen[cid] = time.time()
+                    continue
+
                 # 2. 处理初始化 (自动添加)
                 if data.get("type") == "init":
                     client_id = data.get("client_id", "")
@@ -181,18 +196,21 @@ class App:
 
                 # 3. 处理状态更新
                 elif data.get("type") == "status":
-                    status_map = {"auto": "活跃中", "stop": "空闲"}
+                    status_map = {"auto_main_page": "活跃首页", "auto_reels": "活跃Reels", "auto_group": "活跃小组", "stop": "空闲"}
                     new_status = status_map.get(data.get("status"))
                     if new_status and client_id:
                         self.root.after(0, lambda c=client_id, s=new_status: self.set_status(c, s))
 
+        except websockets.ConnectionClosed as e:
+            print(f"连接关闭 code={e.code} reason={e.reason}")
         except Exception as e:
             print(f"连接异常: {e}")
+            traceback.print_exc()
         finally:
-            # 4. 自动删除：连接断开时触发
             if client_id:
-                print(f"正在移除客户端: {client_id}")
-                self.remove_client(client_id)
+                print("连接可能断开:", client_id)
+                # 标记为失联
+                self.last_seen[client_id] = 0
 
     async def start_server(self, port):
         if port in self.servers:
@@ -202,8 +220,8 @@ class App:
                 lambda ws: self.ws_handler(ws, port),
                 "127.0.0.1",
                 port,
-                ping_interval=10,
-                ping_timeout=5
+                ping_interval=20,
+                ping_timeout=60
             )
             self.servers[port] = server
         except Exception as e:
@@ -237,6 +255,14 @@ class App:
                     self.send(port,client_id,{"action":"auto_reels"}),
                     self.loop
                 )
+    def auto_group(self):
+        for client_id in self.selected_targets():
+            port = self.ports.get(client_id)
+            if port is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self.send(port,client_id,{"action":"auto_group"}),
+                    self.loop
+                )
     def stop_scroll(self):
         for client_id in self.selected_targets():
             port = self.ports.get(client_id)
@@ -245,6 +271,21 @@ class App:
                     self.send(port,client_id,{"action":"stop_scroll"}),
                     self.loop
                 )
+
+    def check_alive(self):
+        now = time.time()
+        dead = []
+
+        for cid, t in list(self.last_seen.items()):
+            if now - t > 60:  # 60秒没心跳
+                dead.append(cid)
+
+        for cid in dead:
+            print("心跳超时删除:", cid)
+            self.remove_client(cid)
+            self.last_seen.pop(cid, None)
+
+        self.root.after(10000, self.check_alive)
 
 
 def main():

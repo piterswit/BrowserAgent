@@ -150,7 +150,7 @@ function connect(i=0){
       });
     }
     if (msg.action === "scroll30") {
-      ws.send(JSON.stringify({type:"status", status:"auto", client_id:clientId}));
+      ws.send(JSON.stringify({type:"status", status:"auto_main_page", client_id:clientId}));
       chrome.tabs.query({active:true,currentWindow:true},tabs=>{
         if(!tabs.length) return;
         chrome.scripting.executeScript({
@@ -160,8 +160,12 @@ function connect(i=0){
       });
     }
     if (msg.action === "auto_reels") {
-      ws.send(JSON.stringify({type:"status", status:"auto", client_id:clientId}));
+      ws.send(JSON.stringify({type:"status", status:"auto_reels", client_id:clientId}));
       openAndInject("https://www.facebook.com/reel/", "auto_reels.js");
+    }
+    if (msg.action === "auto_group") {
+      ws.send(JSON.stringify({type:"status", status:"auto_group", client_id:clientId}));
+      openAndInject("https://www.facebook.com/groups/feed/", "tools.js");
     }
 
     if (msg.action === "stop_scroll") {
@@ -211,10 +215,7 @@ chrome.runtime.onMessage.addListener((msg)=>{
   if(msg.cmd==="connect_py"){
     connect();
   }
-});
-
-chrome.runtime.onMessage.addListener((msg)=>{
-  if(msg.cmd==="auto_active"){
+  else if(msg.cmd==="auto_active"){
     chrome.tabs.query({active:true,currentWindow:true},tabs=>{
       if(!tabs.length) return;
 
@@ -224,11 +225,16 @@ chrome.runtime.onMessage.addListener((msg)=>{
       });
     });
   }
-});
-
-chrome.runtime.onMessage.addListener((msg)=>{
-  if(msg.cmd==="auto_reels"){
+  else if(msg.cmd==="auto_reels"){
     openAndInject("https://www.facebook.com/reel/", "auto_reels.js");
+  }
+  else if(msg.cmd==="auto_group"){
+    openAndInject("https://www.facebook.com/groups/feed/", "tools.js");
+  }
+  else if(msg.cmd==="fb_bridge_active_stopped"){
+    if(ws && ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify({type:"status", status:"stop", client_id:clientId}));
+    }
   }
 });
 
@@ -239,13 +245,15 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 
   try {
     const url = new URL(tab.url);
-    //https://www.facebook.com/?fb_bridge_auto_extension
-    if (tab.url.includes("facebook.com") && url.searchParams.has("fb_bridge_auto_extension")) {
+    //只要带参数 fb_bridge_auto_extension，就执行，https://example.com/?fb_bridge_auto_extension
+    if (url.searchParams.has("fb_bridge_auto_extension")) {
       // 自动滚动
-      chrome.scripting.executeScript({
-        target: { tabId },
-        files:["tools.js"]
-      });
+      setTimeout(() => {
+        chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["tools.js"]
+        });
+      }, 3000);
     }
     //https://www.facebook.com/?fb_bridge_connect_extension
     if (tab.url.includes("facebook.com") && url.searchParams.has("fb_bridge_connect_extension")) {
@@ -260,4 +268,14 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   } catch(e){}
 });
 
+
+// 连接心跳
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      client_id: clientId
+    }));
+  }
+}, 15000);
 
