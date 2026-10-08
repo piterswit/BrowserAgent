@@ -5,8 +5,10 @@ import asyncio
 import json
 import time
 import threading
+import random
+from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
@@ -44,6 +46,7 @@ class App:
         self.ports_name = {}
         self.ports = {}
         self.last_seen = {}  # 心跳包
+        self.avatar_pending = set()
 
         self.build_ui()
         self.scan()
@@ -52,6 +55,14 @@ class App:
     def build_ui(self):
         frm = tb.Frame(self.root)
         frm.pack(fill="both", expand=True, padx=10, pady=10)
+
+        avatar_frame = tb.Frame(frm)
+        avatar_frame.pack(fill="x", pady=5)
+        tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
+        self.avatar_directory = tk.StringVar()
+        tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
+        tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory).pack(side="left", padx=6)
+        tb.Button(avatar_frame, text="换头像", command=self.change_avatar).pack(side="left", padx=6)
 
         btnf = tb.Frame(frm)
         btnf.pack(fill="x", pady=5)
@@ -97,6 +108,7 @@ class App:
 
         self.clients.pop(client_id, None)
         self.ports.pop(client_id, None)
+        self.avatar_pending.discard(client_id)
 
         # 用名字删UI
         self.root.after(0, lambda n=name: self._remove_client_ui(n))
@@ -199,8 +211,15 @@ class App:
                 elif data.get("type") == "status":
                     status_map = {"auto_main_page": "活跃首页", "auto_reels": "活跃Reels", "auto_group": "活跃小组", "stop": "空闲", "cancel_friend_requests": "取消好友请求"}
                     new_status = status_map.get(data.get("status"))
+                    if data.get("status") == "change_avatar":
+                        new_status = "更换头像中"
                     if new_status and client_id:
                         self.root.after(0, lambda c=client_id, s=new_status: self.set_status(c, s))
+
+                elif data.get("type") == "avatar_result" and client_id:
+                    detail = str(data.get("error", ""))[:200]
+                    status = "头像更换成功" if data.get("success") is True else f"换头像失败: {detail}"
+                    self.root.after(0, lambda c=client_id, s=status: self.finish_avatar(c, s))
 
         except websockets.ConnectionClosed as e:
             print(f"连接关闭 code={e.code} reason={e.reason}")
@@ -234,6 +253,48 @@ class App:
                 self.start_server(p),
                 self.loop
             )
+
+    def choose_avatar_directory(self):
+        directory = filedialog.askdirectory(parent=self.root, title="选择头像目录")
+        if directory:
+            self.avatar_directory.set(directory)
+
+    def finish_avatar(self, client_id, status):
+        self.avatar_pending.discard(client_id)
+        self.set_status(client_id, status)
+
+    def change_avatar(self):
+        targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending]
+        if not targets:
+            messagebox.showwarning("换头像", "请选择已连接且未在换头像的账号。", parent=self.root)
+            return
+        try:
+            directory_text = self.avatar_directory.get().strip()
+            if not directory_text:
+                raise ValueError("请选择头像目录。")
+            directory = Path(directory_text).expanduser().resolve(strict=True)
+            if not directory.is_dir():
+                raise ValueError("头像路径必须是目录。")
+            images = [path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.stat().st_size > 0]
+            if not images:
+                raise ValueError("目录中没有 JPG、PNG 或 WebP 图片。")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("换头像", str(exc), parent=self.root)
+            return
+        for client_id in targets:
+            image = random.choice(images)
+            self.avatar_pending.add(client_id)
+            self.set_status(client_id, "更换头像中")
+            asyncio.run_coroutine_threadsafe(self.send_avatar(client_id, image), self.loop)
+
+    async def send_avatar(self, client_id, image):
+        try:
+            ws = self.clients.get(client_id)
+            if ws is None:
+                raise ValueError("浏览器已断开连接")
+            await ws.send(json.dumps({"action": "change_avatar", "file_path": str(image)}))
+        except Exception as exc:
+            self.root.after(0, lambda c=client_id, s=f"发送失败: {exc}": self.finish_avatar(c, s))
 
     async def send(self,port,client_id,data):
         ws = self.clients.get(client_id)

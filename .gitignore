@@ -3,3 +3,4 @@
 /server.spec
 /1
 /release
+*.pyc

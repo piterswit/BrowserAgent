@@ -3,6 +3,7 @@
   "name": "FB Browser Bridge",
   "version": "0.6",
   "permissions": [
+    "debugger",
     "tabs",
     "scripting",
     "storage",
