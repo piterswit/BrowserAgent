@@ -6,6 +6,9 @@ import json
 import time
 import threading
 import random
+import sys
+import base64
+import struct
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -35,126 +38,189 @@ atexit.register(
 class App:
     def __init__(self, root: tb.Window):
         self.root = root
-        self.root.title("FB账号活跃")
-        self.root.geometry("750x750")
+        self.root.title("BrowserAgent · FB账号管理")
+        self.root.geometry("1020x700")
+        self.root.minsize(min(860, self.root.winfo_screenwidth() - 64), min(960, self.root.winfo_screenheight() - 100))
+        self.root.style.theme_use("flatly")
+        style = ttk.Style(self.root)
+        style.configure(".", font=("Microsoft YaHei UI", 10))
+        style.configure("Treeview", rowheight=48, font=("Microsoft YaHei UI", 10))
+        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
+        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
+        icon_folder = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "WS Browser Bridge" / "icon"
+        if (icon_folder / "bridge-128.png").exists():
+            self.window_icon = tk.PhotoImage(file=str(icon_folder / "bridge-128.png"))
+            self.root.iconphoto(True, self.window_icon)
+            self.header_icon = tk.PhotoImage(file=str(icon_folder / "bridge-32.png"))
+        if (icon_folder / "bridge.ico").exists():
+            self.root.iconbitmap(default=str(icon_folder / "bridge.ico"))
+        self.default_avatar = tk.PhotoImage(file=str(icon_folder / "avatar-placeholder.png")) if (icon_folder / "avatar-placeholder.png").exists() else tk.PhotoImage(width=36, height=36)
+        self.avatar_photos = {}
 
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
         self.servers = {}
         self.clients = {}
-        self.ports_name = {}
+        self.accounts = {}
         self.ports = {}
         self.last_seen = {}  # 心跳包
         self.avatar_pending = set()
 
         self.build_ui()
+        self.center_window()
         self.scan()
-        self.root.after(10000, self.check_alive)
+        self.root.after(3000, self.check_alive)
+
+    def center_window(self):
+        self.root.update_idletasks()
+        screen_width, screen_height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        width = min(self.root.winfo_width(), screen_width - 64)
+        height = min(self.root.winfo_height(), screen_height - 100)
+        self.root.geometry(f"{width}x{height}+{max(0, (screen_width - width) // 2)}+{max(0, (screen_height - height) // 2)}")
 
     def build_ui(self):
         frm = tb.Frame(self.root)
-        frm.pack(fill="both", expand=True, padx=10, pady=10)
+        frm.pack(fill="both", expand=True, padx=24, pady=20)
+        header = tb.Frame(frm)
+        header.pack(fill="x", pady=(0, 20))
+        if hasattr(self, "header_icon"):
+            tb.Label(header, image=self.header_icon).pack(side="left", padx=(0, 10))
+        tb.Label(header, text="BrowserAgent", style="Title.TLabel").pack(side="left")
+        tb.Label(header, text="FB账号管理", bootstyle="secondary").pack(side="left", padx=16, pady=(8, 0))
+        self.account_summary = tk.StringVar(value="已连接 0  ·  已选中 0")
+        tb.Label(header, textvariable=self.account_summary, bootstyle="secondary").pack(side="right")
+        tb.Separator(frm).pack(fill="x")
 
+        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(18, 10))
+        btnf = tb.Frame(frm)
+        btnf.pack(fill="x", pady=(0, 18))
+        for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group)):
+            tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
+        tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
+        tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
+
+        tb.Label(frm, text="头像更换", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
         avatar_frame = tb.Frame(frm)
-        avatar_frame.pack(fill="x", pady=5)
+        avatar_frame.pack(fill="x", pady=(0, 20))
         tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
         self.avatar_directory = tk.StringVar()
         tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
-        tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory).pack(side="left", padx=6)
-        tb.Button(avatar_frame, text="换头像", command=self.change_avatar).pack(side="left", padx=6)
-
-        btnf = tb.Frame(frm)
-        btnf.pack(fill="x", pady=5)
-
-        # tb.Button(btnf, text="刷新", command=self.refresh).pack(side="left", padx=6)
-        tb.Button(btnf, text="自动活跃", command=self.scroll).pack(side="left", padx=6)
-        tb.Button(btnf, text="活跃Reels", command=self.auto_reels).pack(side="left", padx=6)
-        tb.Button(btnf, text="活跃小组", command=self.auto_group).pack(side="left", padx=6)
-        tb.Button(btnf, text="停止活跃", command=self.stop_scroll).pack(side="left", padx=6)
-        tb.Button(btnf, text="取消好友请求", command=self.cancel_requets).pack(side="left", padx=12)
+        tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, bootstyle="secondary-outline", padding=(12, 8)).pack(side="left", padx=8)
+        tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(18, 8)).pack(side="left")
+        tb.Separator(frm).pack(fill="x")
+        tb.Label(frm, text="已连接账号", style="Section.TLabel").pack(anchor="w", pady=(18, 10))
 
         frame = tb.Frame(frm)
         frame.pack(fill="both", expand=True, pady=5)
 
         self.list_view = tb.Treeview(
             frame,
-            columns=("state", "name"),
-            show="headings",
+            columns=("name", "fb_id", "state", "detail"),
+            show="tree headings",
             selectmode="extended"
         )
 
         self.list_view.heading("state", text="状态")
-        self.list_view.heading("name", text="名字")
-        self.list_view.column("state", width=150, anchor="center")
+        self.list_view.heading("#0", text="头像")
+        self.list_view.column("#0", width=64, minwidth=64, stretch=False, anchor="center")
+        self.list_view.heading("name", text="账号名称")
+        self.list_view.heading("fb_id", text="FB ID / 用户名")
+        self.list_view.heading("detail", text="执行结果")
+        self.list_view.column("name", width=160, minwidth=100)
+        self.list_view.column("fb_id", width=190, minwidth=120)
+        self.list_view.column("state", width=130, minwidth=110, stretch=False, anchor="center")
+        self.list_view.column("detail", width=350, minwidth=180)
+        self.list_view.tag_configure("success", foreground="#157f78")
+        self.list_view.tag_configure("error", foreground="#b33e46")
+        self.list_view.bind("<<TreeviewSelect>>", lambda event: self.update_summary())
 
         yscroll = tb.Scrollbar(frame, orient="vertical", command=self.list_view.yview)
         self.list_view.configure(yscrollcommand=yscroll.set)
 
-        self.list_view.pack(side="left", fill="both", expand=True)
         yscroll.pack(side="right", fill="y")
+        self.list_view.pack(side="left", fill="both", expand=True)
+        # Apply after ttkbootstrap has built its default table style.
+        style = ttk.Style(self.root)
+        style.configure("Accounts.Treeview", rowheight=60, font=("Microsoft YaHei UI", 10))
+        style.configure("Accounts.Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
+        self.list_view.configure(style="Accounts.Treeview")
 
     def remove_client(self, client_id):
-        name = None
-        # 找到名字
-        for k, v in list(self.ports_name.items()):
-            if v == client_id:
-                name = k
-                break
-
-        # 删除数据
-        if name:
-            self.ports_name.pop(name, None)
-
         self.clients.pop(client_id, None)
+        self.accounts.pop(client_id, None)
         self.ports.pop(client_id, None)
         self.avatar_pending.discard(client_id)
+        self.last_seen.pop(client_id, None)
 
-        # 用名字删UI
-        self.root.after(0, lambda n=name: self._remove_client_ui(n))
+        self.root.after(0, lambda c=client_id: self._remove_client_ui(c))
 
-    def _remove_client_ui(self, name):
-        for item in self.list_view.get_children():
-            if self.get_item_name(item) == name:
-                self.list_view.delete(item)
-                break
+    def _remove_client_ui(self, client_id):
+        if client_id in self.clients:
+            return
+        if self.list_view.exists(client_id):
+            self.list_view.delete(client_id)
+        self.avatar_photos.pop(client_id, None)
+        self.update_summary()
+
+    def update_summary(self):
+        self.account_summary.set(f"已连接 {len(self.list_view.get_children())}  ·  已选中 {len(self.list_view.selection())}")
+
+    def register_client_ui(self, client_id, name, fb_id, error="", avatar_data=None):
+        if client_id not in self.clients:
+            return
+        values = (name, fb_id or "未识别", "识别失败" if error else "空闲", error)
+        if self.list_view.exists(client_id):
+            self.list_view.item(client_id, values=values)
+        else:
+            self.list_view.insert("", "end", iid=client_id, values=values, image=self.default_avatar)
+        self.update_avatar_ui(client_id, avatar_data)
+        self.update_summary()
+
+    def update_avatar_ui(self, client_id, avatar_data):
+        if not self.list_view.exists(client_id) or not avatar_data:
+            return
+        try:
+            prefix = "data:image/png;base64,"
+            if not isinstance(avatar_data, str) or not avatar_data.startswith(prefix) or len(avatar_data) > 65536:
+                return
+            encoded = avatar_data[len(prefix):]
+            raw = base64.b64decode(encoded, validate=True)
+            if raw[:8] != b"\x89PNG\r\n\x1a\n" or len(raw) < 24:
+                return
+            width, height = struct.unpack(">II", raw[16:24])
+            if not (0 < width <= 64 and 0 < height <= 64):
+                return
+            photo = tk.PhotoImage(master=self.root, data=encoded, format="png")
+            if max(width, height) > 36:
+                factor = (max(width, height) + 35) // 36
+                photo = photo.subsample(factor, factor)
+        except (ValueError, tk.TclError):
+            return
+        self.avatar_photos[client_id] = photo
+        self.list_view.item(client_id, image=photo)
 
     def get_item_id(self, item):
-        return self.ports_name.get(self.list_view.item(item, "values")[1])
+        return item if item in self.clients else None
     
     def get_item_name(self,item):
-        return self.list_view.item(item,"values")[1]
+        return self.list_view.item(item,"values")[0]
 
     def selected_ports(self):
         return [ self.get_item_id(i) for i in self.list_view.selection()]
     
     def get_item_target(self,item):
-        name = self.list_view.item(item,"values")[1]
-        return self.ports_name.get(name)
+        return self.get_item_id(item)
 
     def selected_targets(self):
         return [self.get_item_target(i) for i in self.list_view.selection()]
 
     def set_status(self, client_id, status):
-        for item in self.list_view.get_children():
-            if self.get_item_id(item) == client_id:
-                self.list_view.item(item, values=(status, self.list_view.item(item, "values")[1]))
-                break
-
-    def delete_by_name(self, fb_name: str):
-        client_id = self.ports_name.pop(fb_name, None)
-        if not client_id:
-            return
-
-        # 删数据
-        self.clients.pop(client_id, None)
-        self.ports.pop(client_id, None)
-
-        # 删UI
-        for item in self.list_view.get_children():
-            if self.get_item_name(item) == fb_name:
-                self.list_view.delete(item)
-                break
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "state", status)
+            self.list_view.set(client_id, "detail", "")
+            self.list_view.item(client_id, tags=())
 
     def refresh(self):
         dead_clients = []
@@ -170,11 +236,9 @@ class App:
 
         # 清理UI孤儿项
         for item in list(self.list_view.get_children()):
-            name = self.get_item_name(item)
-            client_id = self.ports_name.get(name)
-
-            if client_id not in self.clients:
+            if item not in self.clients:
                 self.list_view.delete(item)
+        self.update_summary()
 
     async def ws_handler(self, ws, port):
         client_id = None
@@ -185,27 +249,32 @@ class App:
                 # 心跳包
                 if data.get("type") == "heartbeat":
                     cid = data.get("client_id")
-                    if cid:
+                    if cid == client_id and self.clients.get(cid) is ws:
                         self.last_seen[cid] = time.time()
                     continue
 
                 # 2. 处理初始化 (自动添加)
                 if data.get("type") == "init":
                     client_id = data.get("client_id", "")
-                    name = data.get("fb_name", "未知用户")
+                    name = data.get("fb_name") or "未知用户"
                     if not client_id: continue
 
-                    # 先清理同名旧连接，防止 UI 重复
-                    self.delete_by_name(name)
-
                     # 登记数据
+                    if self.clients.get(client_id) is not ws:
+                        self.avatar_pending.discard(client_id)
                     self.clients[client_id] = ws
-                    self.ports_name[name] = client_id
+                    self.accounts[client_id] = {"fb_id": data.get("fb_id"), "profile_url": data.get("profile_url")}
                     self.ports[client_id] = port
+                    self.last_seen[client_id] = time.time()
 
                     # 关键：使用 after 确保在 Tkinter 主线程更新 UI
-                    self.root.after(0, lambda n=name: self.list_view.insert("", "end", values=("空闲", n)))
+                    display_id = data.get("fb_id") or data.get("fb_username")
+                    identity_error = str(data.get("identity_error") or "")[:200]
+                    avatar_data = data.get("avatar_data")
+                    self.root.after(0, lambda c=client_id, n=name, f=display_id, e=identity_error, a=avatar_data: self.register_client_ui(c, n, f, e, a))
                     print(f"浏览器已连接: {name} (ID: {client_id})")
+                    if identity_error:
+                        print(f"账号识别失败: {identity_error}")
 
                 # 3. 处理状态更新
                 elif data.get("type") == "status":
@@ -218,8 +287,14 @@ class App:
 
                 elif data.get("type") == "avatar_result" and client_id:
                     detail = str(data.get("error", ""))[:200]
-                    status = "头像更换成功" if data.get("success") is True else f"换头像失败: {detail}"
+                    if data.get("success") is True:
+                        status = "头像更换成功" if data.get("confirmed") is True else "已提交保存，请核对头像"
+                    else:
+                        status = f"换头像失败: {detail}"
                     self.root.after(0, lambda c=client_id, s=status: self.finish_avatar(c, s))
+                    avatar_data = data.get("avatar_data")
+                    if data.get("success") is True and avatar_data:
+                        self.root.after(0, lambda c=client_id, a=avatar_data: self.update_avatar_ui(c, a))
 
         except websockets.ConnectionClosed as e:
             print(f"连接关闭 code={e.code} reason={e.reason}")
@@ -227,10 +302,9 @@ class App:
             print(f"连接异常: {e}")
             traceback.print_exc()
         finally:
-            if client_id:
-                print("连接可能断开:", client_id)
-                # 标记为失联
-                self.last_seen[client_id] = 0
+            if client_id and self.clients.get(client_id) is ws:
+                print("浏览器已断开:", client_id)
+                self.remove_client(client_id)
 
     async def start_server(self, port):
         if port in self.servers:
@@ -261,7 +335,12 @@ class App:
 
     def finish_avatar(self, client_id, status):
         self.avatar_pending.discard(client_id)
-        self.set_status(client_id, status)
+        success = status == "头像更换成功"
+        unconfirmed = status == "已提交保存，请核对头像"
+        self.set_status(client_id, "头像已更新" if success else "待确认" if unconfirmed else "执行失败")
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "detail", status)
+            self.list_view.item(client_id, tags=("success" if success else "" if unconfirmed else "error",))
 
     def change_avatar(self):
         targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending]
@@ -292,7 +371,8 @@ class App:
             ws = self.clients.get(client_id)
             if ws is None:
                 raise ValueError("浏览器已断开连接")
-            await ws.send(json.dumps({"action": "change_avatar", "file_path": str(image)}))
+            account = self.accounts.get(client_id, {})
+            await ws.send(json.dumps({"action": "change_avatar", "file_path": str(image), "profile_url": account.get("profile_url")}))
         except Exception as exc:
             self.root.after(0, lambda c=client_id, s=f"发送失败: {exc}": self.finish_avatar(c, s))
 
@@ -346,8 +426,8 @@ class App:
         now = time.time()
         dead = []
 
-        for cid, t in list(self.last_seen.items()):
-            if now - t > 60:  # 60秒没心跳
+        for cid, ws in list(self.clients.items()):
+            if ws.close_code is not None or now - self.last_seen.get(cid, now) > 60:
                 dead.append(cid)
 
         for cid in dead:
@@ -355,19 +435,13 @@ class App:
             self.remove_client(cid)
             self.last_seen.pop(cid, None)
 
-        self.root.after(10000, self.check_alive)
+        self.root.after(3000, self.check_alive)
 
 
 def main():
-    root = tb.Window()
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
+    root = tb.Window(themename="flatly")
     App(root)
-    style = ttk.Style()
-    style.configure(".", font=("Microsoft YaHei UI", 10))
-    style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"))
-    style.configure(
-        "Treeview",
-        rowheight=30   # 行高，单位是像素，可自行调大
-    )
     root.mainloop()
 
 

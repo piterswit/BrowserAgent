@@ -1,0 +1,74 @@
+"""Check the native control window at normal and minimum dimensions."""
+import sys
+import base64
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import server
+
+
+def main():
+    server.App.scan = lambda self: None
+    root = server.tb.Window(themename="flatly")
+    try:
+        app = server.App(root)
+        root.update()
+        table_style = app.list_view.cget("style")
+        assert table_style == "Accounts.Treeview"
+        assert int(root.style.lookup(table_style, "rowheight")) == 60
+        assert abs(root.winfo_x() - (root.winfo_screenwidth() - root.winfo_width()) // 2) < 5
+        assert abs(root.winfo_y() - (root.winfo_screenheight() - root.winfo_height()) // 2) < 5
+        assert app.header_icon.width() == 32
+        for cid in ("preview-1", "preview-2"):
+            app.clients[cid] = object()
+            app.register_client_ui(cid, "同名账号", cid)
+        avatar_file = Path(__file__).resolve().parents[1] / "WS Browser Bridge" / "icon" / "avatar-placeholder.png"
+        avatar_data = "data:image/png;base64," + base64.b64encode(avatar_file.read_bytes()).decode("ascii")
+        app.update_avatar_ui("preview-1", avatar_data)
+        assert app.avatar_photos["preview-1"].width() == 36
+        original_photo = app.avatar_photos["preview-1"]
+        app.update_avatar_ui("preview-1", "data:image/png;base64,invalid")
+        assert app.avatar_photos["preview-1"] is original_photo
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            large = server.tk.PhotoImage(master=root, width=64, height=64)
+            large.put("#157f78", to=(0, 0, 64, 64))
+            filename = Path(directory) / "large.png"
+            large.write(filename.as_posix(), format="png")
+            encoded = "data:image/png;base64," + base64.b64encode(filename.read_bytes()).decode("ascii")
+            app.update_avatar_ui("preview-2", encoded)
+            assert app.avatar_photos["preview-2"].height() <= 36
+        app.finish_avatar("preview-1", "头像更换成功")
+        app.finish_avatar("preview-2", "已提交保存，请核对头像")
+        app.list_view.selection_set("preview-1", "preview-2")
+        for geometry in ("1020x700", "860x560"):
+            root.geometry(geometry)
+            root.update()
+            def check(widget):
+                for child in widget.winfo_children():
+                    if child.winfo_manager() == "pack":
+                        assert child.winfo_x() >= 0, str(child)
+                        assert child.winfo_x() + child.winfo_width() <= widget.winfo_width(), str(child)
+                        assert child.winfo_y() + child.winfo_height() <= widget.winfo_height(), str(child)
+                    if isinstance(child, server.ttk.Button):
+                        assert child.winfo_width() >= child.winfo_reqwidth(), str(child)
+                    check(child)
+            check(root)
+            assert app.list_view.winfo_height() > 100
+            row_box = app.list_view.bbox("preview-1", "#0")
+            assert row_box and row_box[3] == 60
+            assert row_box[3] >= app.avatar_photos["preview-1"].height() + 16
+        assert app.list_view.set("preview-1", "state") == "头像已更新"
+        assert app.list_view.set("preview-2", "state") == "待确认"
+        assert app.selected_targets() == ["preview-1", "preview-2"]
+        app.remove_client("preview-1")
+        root.update()
+        assert not app.list_view.exists("preview-1")
+        assert "preview-1" not in app.avatar_photos
+        print("GUI layout, centering, icons, avatar rendering and cleanup checks passed")
+    finally:
+        root.destroy()
+
+
+if __name__ == "__main__":
+    main()

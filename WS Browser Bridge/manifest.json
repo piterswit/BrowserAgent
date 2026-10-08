@@ -1,7 +1,14 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "118",
   "name": "FB Browser Bridge",
   "version": "0.6",
+  "icons": {
+    "16": "icon/bridge-16.png",
+    "32": "icon/bridge-32.png",
+    "48": "icon/bridge-48.png",
+    "128": "icon/bridge-128.png"
+  },
   "permissions": [
     "debugger",
     "tabs",
@@ -12,6 +19,8 @@
   ],
   "host_permissions": [
     "https://*.facebook.com/*",
+    "https://*.fbcdn.net/*",
+    "https://*.fbsbx.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -19,6 +28,10 @@
     "type": "module"
   },
   "action": {
+    "default_icon": {
+      "16": "icon/bridge-16.png",
+      "32": "icon/bridge-32.png"
+    },
     "default_popup": "popup.html"
   }
 }

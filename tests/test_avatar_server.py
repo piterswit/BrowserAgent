@@ -2,6 +2,7 @@ import ast
 import asyncio
 import json
 import random
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ class AvatarServerTest(unittest.TestCase):
         tree = ast.parse(source.read_text(encoding="utf-8"))
         app_class = next(node for node in tree.body if isinstance(node, ast.ClassDef))
         namespace = {"tb": SimpleNamespace(Window=object), "Path": Path,
-                     "random": random, "asyncio": asyncio, "json": json}
+                     "random": random, "asyncio": asyncio, "json": json, "time": time, "websockets": SimpleNamespace(ConnectionClosed=type("ConnectionClosed", (Exception,), {}))}
         self.dialogs = []
         namespace["messagebox"] = SimpleNamespace(
             showwarning=lambda *args, **kwargs: self.dialogs.append(args),
@@ -24,10 +25,68 @@ class AvatarServerTest(unittest.TestCase):
         self.app = namespace["App"].__new__(namespace["App"])
         self.app.avatar_pending = set()
         self.app.clients = {"a": object(), "b": object()}
+        self.app.accounts = {}
+        self.app.ports = {}
+        self.app.last_seen = {}
+        self.app.list_view = SimpleNamespace(exists=lambda cid: False)
         self.app.root = SimpleNamespace(after=lambda _, fn: fn())
         self.app.selected_targets = lambda: ["a", "b"]
         self.states = []
         self.app.set_status = lambda cid, status: self.states.append((cid, status))
+        self.app._remove_client_ui = lambda cid: None
+
+    def test_socket_close_immediately_removes_account(self):
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"})
+        class Socket:
+            def __aiter__(self):
+                return messages()
+        ws = Socket()
+        self.app.register_client_ui = lambda *args: None
+        asyncio.run(self.app.ws_handler(ws, 8765))
+        self.assertNotIn("a", self.app.clients)
+        self.assertNotIn("a", self.app.last_seen)
+        self.assertNotIn("a", self.app.accounts)
+
+    def test_real_websocket_disconnect_removes_account(self):
+        import websockets
+        ready = asyncio.Event()
+        self.app.register_client_ui = lambda *args: ready.set()
+
+        async def scenario():
+            async with websockets.serve(lambda ws: self.app.ws_handler(ws, 8765), "127.0.0.1", 0) as listener:
+                port = listener.sockets[0].getsockname()[1]
+                async with websockets.connect(f"ws://127.0.0.1:{port}") as socket:
+                    await socket.send(json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"}))
+                    await asyncio.wait_for(ready.wait(), 2)
+                    self.assertIn("a", self.app.clients)
+                for _ in range(100):
+                    if "a" not in self.app.clients:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertNotIn("a", self.app.clients)
+
+        asyncio.run(scenario())
+
+    def test_old_connection_cannot_remove_replacement(self):
+        replacement = object()
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"})
+            self.app.clients["a"] = replacement
+        class Socket:
+            def __aiter__(self):
+                return messages()
+        self.app.register_client_ui = lambda *args: None
+        asyncio.run(self.app.ws_handler(Socket(), 8765))
+        self.assertIs(self.app.clients["a"], replacement)
+
+    def test_closed_socket_and_missing_heartbeat_are_removed(self):
+        self.app.clients = {"a": SimpleNamespace(close_code=1000), "b": SimpleNamespace(close_code=None)}
+        self.app.last_seen = {"a": time.time(), "b": time.time() - 61}
+        self.app.root = SimpleNamespace(after=lambda *args: None)
+        self.app.check_alive()
+        self.assertFalse(self.app.clients)
+        self.assertFalse(self.app.last_seen)
 
     def test_empty_directory_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -45,11 +104,11 @@ class AvatarServerTest(unittest.TestCase):
         self.app.clients["a"] = SimpleNamespace(send=send)
         image = Path("D:/avatars/photo.png")
         asyncio.run(self.app.send_avatar("a", image))
-        self.assertEqual(sent, [{"action": "change_avatar", "file_path": str(image)}])
+        self.assertEqual(sent, [{"action": "change_avatar", "file_path": str(image), "profile_url": None}])
         self.app.avatar_pending.add("missing")
         asyncio.run(self.app.send_avatar("missing", image))
         self.assertNotIn("missing", self.app.avatar_pending)
-        self.assertIn("发送失败", self.states[-1][1])
+        self.assertEqual(self.states[-1][1], "执行失败")
 
     def test_batch_filters_images_and_skips_pending_accounts(self):
         sent = []
