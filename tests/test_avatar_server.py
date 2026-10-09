@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import ctypes
 import json
 import random
 import time
@@ -17,6 +18,10 @@ class AvatarServerTest(unittest.TestCase):
         app_class = next(node for node in tree.body if isinstance(node, ast.ClassDef))
         namespace = {"tb": SimpleNamespace(Window=object), "Path": Path,
                      "random": random, "asyncio": asyncio, "json": json, "time": time, "websockets": SimpleNamespace(ConnectionClosed=type("ConnectionClosed", (Exception,), {}))}
+        self.foreground_permissions = []
+        self.allow_foreground = lambda process: self.foreground_permissions.append(process.value)
+        namespace["ctypes"] = SimpleNamespace(c_uint32=ctypes.c_uint32,
+            windll=SimpleNamespace(user32=SimpleNamespace(AllowSetForegroundWindow=self.allow_foreground)))
         self.dialogs = []
         namespace["messagebox"] = SimpleNamespace(
             showwarning=lambda *args, **kwargs: self.dialogs.append(args),
@@ -29,7 +34,7 @@ class AvatarServerTest(unittest.TestCase):
         self.app.ports = {}
         self.app.last_seen = {}
         self.app.list_view = SimpleNamespace(exists=lambda cid: False)
-        self.app.root = SimpleNamespace(after=lambda _, fn: fn())
+        self.app.root = SimpleNamespace(after=lambda _, fn: fn(), after_idle=lambda fn: fn())
         self.app.selected_targets = lambda: ["a", "b"]
         self.states = []
         self.app.set_status = lambda cid, status: self.states.append((cid, status))
@@ -67,6 +72,7 @@ class AvatarServerTest(unittest.TestCase):
         self.app.loop = object()
 
         async def capture(port, cid, data):
+            self.assertEqual(self.foreground_permissions, [0xFFFFFFFF])
             sent.append((port, cid, data))
 
         self.app.send = capture
@@ -74,6 +80,33 @@ class AvatarServerTest(unittest.TestCase):
             self.app.locate_browser("b")
             self.app.locate_browser("disconnected")
         self.assertEqual(sent, [(8766, "b", {"action": "locate_browser"})])
+        self.assertFalse(self.states)
+
+    def test_browser_foreground_is_granted_after_menu_closes(self):
+        callbacks = []
+        sent = []
+        self.app.root.after_idle = callbacks.append
+        self.app.loop = object()
+
+        async def capture(port, cid, data):
+            sent.append(cid)
+
+        self.app.send = capture
+        self.app.locate_browser("a")
+        self.assertFalse(self.foreground_permissions)
+        self.assertFalse(sent)
+        with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
+            callbacks[0]()
+        self.assertEqual(self.foreground_permissions, [0xFFFFFFFF])
+        self.assertEqual(sent, ["a"])
+
+    def test_disconnected_browser_does_not_receive_foreground_permission(self):
+        callbacks = []
+        self.app.root.after_idle = callbacks.append
+        self.app.locate_browser("a")
+        self.app.clients.pop("a")
+        callbacks[0]()
+        self.assertFalse(self.foreground_permissions)
 
     def test_activity_pause_reason_reaches_the_result_column(self):
         details = []
@@ -196,6 +229,50 @@ class AvatarServerTest(unittest.TestCase):
                 self.app.change_avatar()
             self.assertEqual(sent, [("a", image)])
             self.assertEqual(self.app.avatar_pending, {"a", "b"})
+
+    def run_avatar_batch(self, account_count, image_count):
+        sent = []
+        targets = [f"account-{index}" for index in range(account_count)]
+        self.app.clients = dict.fromkeys(targets, object())
+        self.app.selected_targets = lambda: targets
+        self.app.loop = object()
+
+        async def capture(cid, image):
+            sent.append((cid, image.name))
+
+        self.app.send_avatar = capture
+        with tempfile.TemporaryDirectory() as directory:
+            for index in range(image_count):
+                (Path(directory) / f"avatar-{index}.png").write_bytes(b"image")
+            self.app.avatar_directory = SimpleNamespace(get=lambda: directory)
+            with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
+                self.app.change_avatar()
+        return sent
+
+    def test_batch_uses_different_images_when_enough(self):
+        sent = self.run_avatar_batch(4, 5)
+        self.assertEqual(len(sent), 4)
+        self.assertEqual(len({image for _, image in sent}), 4)
+        self.assertFalse(self.dialogs)
+
+    def test_batch_reuses_only_after_each_pool_is_exhausted_and_warns_once(self):
+        sent = self.run_avatar_batch(7, 3)
+        images = [image for _, image in sent]
+        self.assertEqual(len(images), 7)
+        self.assertEqual(len(set(images[:3])), 3)
+        self.assertEqual(len(set(images[3:6])), 3)
+        self.assertTrue(all(left != right for left, right in zip(images, images[1:])))
+        self.assertEqual(sorted(images.count(image) for image in set(images)), [2, 2, 3])
+        self.assertEqual(len(self.dialogs), 1)
+        self.assertEqual(self.dialogs[0][0], "头像数量不足")
+        self.assertIn("7 个账号", self.dialogs[0][1])
+        self.assertIn("3 张", self.dialogs[0][1])
+
+    def test_single_image_can_be_reused_with_warning(self):
+        sent = self.run_avatar_batch(3, 1)
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(len({image for _, image in sent}), 1)
+        self.assertEqual(len(self.dialogs), 1)
 
 
 if __name__ == "__main__":

@@ -11,9 +11,15 @@ let avatarBusy = false;
 const taskTabs = new Set();
 let avatarOperation = null;
 
+async function focusWindow(windowId) {
+  const window = await chrome.windows.get(windowId);
+  if (window.state === "minimized") await chrome.windows.update(windowId, {state: "normal"});
+  await chrome.windows.update(windowId, {focused: true});
+}
+
 async function activateTab(tabId) {
   const tab = await chrome.tabs.get(tabId);
-  await chrome.windows.update(tab.windowId, {focused: true});
+  await focusWindow(tab.windowId);
   await chrome.tabs.update(tabId, {active: true});
 }
 
@@ -28,9 +34,8 @@ async function locateBrowser() {
     const windows = await chrome.windows.getAll({windowTypes: ["normal"]});
     const window = windows.find(item => item.focused) || windows[0];
     if (!window) throw new Error("浏览器窗口已关闭");
-    await chrome.windows.update(window.id, {focused: true});
+    await focusWindow(window.id);
   }
-  safeSend({type: "activity_detail", detail: "已定位浏览器"});
 }
 
 async function createProfileTab(path = "/me") {
@@ -609,7 +614,7 @@ function reportError(error) {
   safeSend({type: "status", status: "activity_error", error: error.message || String(error)});
 }
 async function handleAction(msg) {
-  if (msg.action === "locate_browser") return locateBrowser();
+  if (msg.action === "locate_browser") return locateBrowser().catch(error => console.warn("定位浏览器失败", error.message));
   if (msg.action === "stop_scroll") return stopActivity();
   if (msg.action === "scroll30") return startActivity("home");
   if (msg.action === "auto_group") return startActivity("group");

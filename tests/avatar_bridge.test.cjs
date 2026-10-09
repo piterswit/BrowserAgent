@@ -13,7 +13,7 @@ function bridge(mode, failure, identityError = "") {
   const identity = {fb_name: "Test Account", fb_id: "123", profile_url: "https://www.facebook.com/profile.php?id=123", avatar_url: "https://scontent.example.fbcdn.net/photo.jpg"};
   let detached = 0;
   const chrome = {
-    windows: {update: async () => {}, getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
+    windows: {get: async () => ({id: 1, state: "normal"}), update: async () => {}, getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
     storage: {session: {get: async () => ({}), set: async () => {}}},
     alarms: {clear: async () => {}, create: async () => {}, onAlarm: {addListener() {}}},
     tabs: {
@@ -161,6 +161,31 @@ test("locate browser activates the existing FB tab without navigating or creatin
   assert.equal(b.navigated[0].options.active, true);
   assert.equal(b.navigated[0].options.url, undefined);
   assert.equal(b.created.length, 0);
+  assert.equal(b.messages.length, 0);
+});
+
+test("locate restores minimized window before focusing, without status messages", async () => {
+  const b = bridge("input");
+  const updates = [];
+  b.chrome.windows.get = async id => ({id, state: "minimized"});
+  b.chrome.windows.update = async (id, options) => updates.push({id, options});
+  await vm.runInContext('handleAction({action: "locate_browser"})', b.context);
+  assert.equal(updates[0].options.state, "normal");
+  assert.equal(updates[1].options.focused, true);
+  assert.equal(b.messages.length, 0);
+});
+
+test("locate preserves maximized window and never changes account status on failure", async () => {
+  const b = bridge("input");
+  const updates = [];
+  b.chrome.windows.get = async id => ({id, state: "maximized"});
+  b.chrome.windows.update = async (id, options) => updates.push(options);
+  await vm.runInContext('handleAction({action: "locate_browser"})', b.context);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].state, undefined);
+  b.chrome.windows.get = async () => { throw new Error("window closed"); };
+  await vm.runInContext('handleAction({action: "locate_browser"})', b.context);
+  assert.equal(b.messages.length, 0);
 });
 
 test("homepage never takes feed authors or OG cover images as own avatar", async () => {

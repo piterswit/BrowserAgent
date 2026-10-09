@@ -240,8 +240,18 @@ class App:
 
     def locate_browser(self, client_id):
         if client_id in self.clients:
-            asyncio.run_coroutine_threadsafe(
-                self.send(self.ports.get(client_id), client_id, {"action": "locate_browser"}), self.loop)
+            self.root.after_idle(lambda: self.send_browser_location(client_id))
+
+    def send_browser_location(self, client_id):
+        if client_id not in self.clients:
+            return
+        # Grant foreground activation only after the native popup menu closes.
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(ctypes.c_uint32(0xFFFFFFFF))
+        except (OSError, AttributeError):
+            pass
+        asyncio.run_coroutine_threadsafe(
+            self.send(self.ports.get(client_id), client_id, {"action": "locate_browser"}), self.loop)
 
     def set_status(self, client_id, status):
         if self.list_view.exists(client_id):
@@ -393,7 +403,7 @@ class App:
     def finish_avatar(self, client_id, status):
         self.avatar_pending.discard(client_id)
         success = status == "头像更换成功"
-        unconfirmed = status == "已提交保存，请核对头像"
+        unconfirmed = status.startswith("已提交保存，请核对头像")
         self.set_status(client_id, "头像已更新" if success else "待确认" if unconfirmed else "执行失败")
         if self.list_view.exists(client_id):
             self.list_view.set(client_id, "detail", status)
@@ -417,8 +427,21 @@ class App:
         except (OSError, ValueError) as exc:
             messagebox.showerror("换头像", str(exc), parent=self.root)
             return
+        if len(images) < len(targets):
+            messagebox.showwarning(
+                "头像数量不足",
+                f"本次选择了 {len(targets)} 个账号，目录中只有 {len(images)} 张可用图片。\n"
+                "将先随机分配不重复的图片，用完后重新打乱复用；部分账号的头像会重复。",
+                parent=self.root)
+        pool = []
+        previous_image = None
         for client_id in targets:
-            image = random.choice(images)
+            if not pool:
+                pool = random.sample(images, len(images))
+                if len(pool) > 1 and pool[-1] == previous_image:
+                    pool[-1], pool[0] = pool[0], pool[-1]
+            image = pool.pop()
+            previous_image = image
             self.avatar_pending.add(client_id)
             self.set_status(client_id, "更换头像中")
             asyncio.run_coroutine_threadsafe(self.send_avatar(client_id, image), self.loop)
@@ -439,7 +462,8 @@ class App:
             try:
                 await ws.send(json.dumps(data))
             except Exception as error:
-                self.root.after(0, lambda c=client_id, e=str(error): self.activity_error(c, e))
+                if data.get("action") != "locate_browser":
+                    self.root.after(0, lambda c=client_id, e=str(error): self.activity_error(c, e))
 
     def activity_error(self, client_id, detail):
         self.set_status(client_id, "执行失败")
