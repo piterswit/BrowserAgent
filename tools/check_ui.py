@@ -2,6 +2,8 @@
 import sys
 import base64
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -41,6 +43,12 @@ def main():
         app.finish_avatar("preview-1", "头像更换成功")
         app.finish_avatar("preview-2", "已提交保存，请核对头像")
         app.list_view.selection_set("preview-1", "preview-2")
+        root.update()
+        row = app.list_view.bbox("preview-2")
+        with patch.object(app.account_menu, "tk_popup"), patch.object(app.account_menu, "grab_release"):
+            app.show_account_menu(SimpleNamespace(y=row[1] + 5, x_root=100, y_root=100))
+        assert app.account_menu.entrycget(0, "label") == "定位浏览器"
+        assert app.list_view.selection() == ("preview-1", "preview-2")
         for geometry in ("1020x700", "860x560"):
             root.geometry(geometry)
             root.update()

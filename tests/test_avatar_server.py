@@ -61,6 +61,20 @@ class AvatarServerTest(unittest.TestCase):
             self.app.auto_custom()
         self.assertEqual(sent, [("a", {"action": "auto_custom"})])
 
+    def test_locate_browser_only_targets_clicked_account(self):
+        sent = []
+        self.app.ports = {"b": 8766}
+        self.app.loop = object()
+
+        async def capture(port, cid, data):
+            sent.append((port, cid, data))
+
+        self.app.send = capture
+        with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
+            self.app.locate_browser("b")
+            self.app.locate_browser("disconnected")
+        self.assertEqual(sent, [(8766, "b", {"action": "locate_browser"})])
+
     def test_activity_pause_reason_reaches_the_result_column(self):
         details = []
         self.app.register_client_ui = lambda *args: None

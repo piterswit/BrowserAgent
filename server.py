@@ -99,22 +99,22 @@ class App:
         tb.Label(header, textvariable=self.account_summary, bootstyle="secondary").pack(side="right")
         tb.Separator(frm).pack(fill="x")
 
-        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(12, 10))
-        btnf = tb.Frame(frm)
-        btnf.pack(fill="x", pady=(0, 12))
-        for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group), ("自定义活跃", self.auto_custom)):
-            tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
-        tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
-        tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
-
         avatar_frame = tb.Frame(frm)
-        avatar_frame.pack(fill="x", pady=(0, 12))
+        avatar_frame.pack(fill="x", pady=(16, 12))
         tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
         directory = self.configuration.get("avatar_directory", "")
         self.avatar_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
         tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
         tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, bootstyle="secondary-outline", padding=(12, 8)).pack(side="left", padx=8)
         tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
+
+        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
+        btnf = tb.Frame(frm)
+        btnf.pack(fill="x", pady=(0, 12))
+        for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group), ("自定义活跃", self.auto_custom)):
+            tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
+        tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
+        tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
 
         frame = tb.Frame(frm)
         frame.pack(fill="both", expand=True, pady=5)
@@ -139,6 +139,8 @@ class App:
         self.list_view.tag_configure("success", foreground="#157f78")
         self.list_view.tag_configure("error", foreground="#b33e46")
         self.list_view.bind("<<TreeviewSelect>>", lambda event: self.update_summary())
+        self.account_menu = tk.Menu(self.root, tearoff=False)
+        self.list_view.bind("<Button-3>", self.show_account_menu)
 
         yscroll = tb.Scrollbar(frame, orient="vertical", command=self.list_view.yview)
         self.list_view.configure(yscrollcommand=yscroll.set)
@@ -176,7 +178,8 @@ class App:
             return
         values = (name, fb_id or "未识别", "识别失败" if error else "空闲", error)
         if self.list_view.exists(client_id):
-            self.list_view.item(client_id, values=values)
+            self.list_view.item(client_id, values=values, image=self.default_avatar)
+            self.avatar_photos.pop(client_id, None)
         else:
             self.list_view.insert("", "end", iid=client_id, values=values, image=self.default_avatar)
         self.update_avatar_ui(client_id, avatar_data)
@@ -219,6 +222,26 @@ class App:
 
     def selected_targets(self):
         return [self.get_item_target(i) for i in self.list_view.selection()]
+
+    def show_account_menu(self, event):
+        client_id = self.list_view.identify_row(event.y)
+        if not client_id or client_id not in self.clients:
+            return
+        if client_id not in self.list_view.selection():
+            self.list_view.selection_set(client_id)
+        self.list_view.focus(client_id)
+        menu = self.account_menu
+        menu.delete(0, "end")
+        menu.add_command(label="定位浏览器", command=lambda: self.locate_browser(client_id))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def locate_browser(self, client_id):
+        if client_id in self.clients:
+            asyncio.run_coroutine_threadsafe(
+                self.send(self.ports.get(client_id), client_id, {"action": "locate_browser"}), self.loop)
 
     def set_status(self, client_id, status):
         if self.list_view.exists(client_id):
@@ -300,6 +323,8 @@ class App:
                     detail = str(data.get("error", ""))[:200]
                     if data.get("success") is True:
                         status = "头像更换成功" if data.get("confirmed") is True else "已提交保存，请核对头像"
+                        if data.get("confirmed") is not True and detail:
+                            status += f": {detail}"
                     else:
                         status = f"换头像失败: {detail}"
                     self.root.after(0, lambda c=client_id, s=status: self.finish_avatar(c, s))

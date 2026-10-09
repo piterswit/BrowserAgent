@@ -9,6 +9,29 @@ const PORTS=[
 
 let avatarBusy = false;
 const taskTabs = new Set();
+let avatarOperation = null;
+
+async function activateTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  await chrome.windows.update(tab.windowId, {focused: true});
+  await chrome.tabs.update(tabId, {active: true});
+}
+
+async function locateBrowser() {
+  const tabs = await chrome.tabs.query({});
+  const tab = tabs.find(item => item.id === avatarOperation?.tabId) ||
+    tabs.find(item => item.id === activeRun?.tabId) ||
+    tabs.find(item => item.active && isFacebook(item.url) && !taskTabs.has(item.id)) ||
+    tabs.find(item => isFacebook(item.url) && !taskTabs.has(item.id));
+  if (tab) await activateTab(tab.id);
+  else {
+    const windows = await chrome.windows.getAll({windowTypes: ["normal"]});
+    const window = windows.find(item => item.focused) || windows[0];
+    if (!window) throw new Error("浏览器窗口已关闭");
+    await chrome.windows.update(window.id, {focused: true});
+  }
+  safeSend({type: "activity_detail", detail: "已定位浏览器"});
+}
 
 async function createProfileTab(path = "/me") {
   const windows = await chrome.windows.getAll({windowTypes: ["normal"]});
@@ -89,7 +112,9 @@ async function readProfileIdentity(tabId) {
             const label = cleanName(link.getAttribute("aria-label"));
             return /(^|\.)facebook\.com$/.test(url.hostname) &&
               (url.pathname === "/profile.php" && /^[1-9]\d+$/.test(url.searchParams.get("id") || "") || part && !part.includes("/") && !excluded.test(part)) &&
-              (validName(label) || user?.id && url.searchParams.get("id") === user.id || /^(your profile|你的个人主页|你的個人檔案)$/i.test(label));
+              (user?.id && (url.searchParams.get("id") === user.id || part === user.id) ||
+                user?.name && label.toLowerCase() === user.name.toLowerCase() ||
+                /^(your profile|你的个人主页|你的個人檔案)$/i.test(label) || !user && validName(label));
           } catch { return false; }
         }) : null;
         const linked = ownLink ? new URL(ownLink.href, current.href) : null;
@@ -111,20 +136,24 @@ async function readProfileIdentity(tabId) {
           .find(validName);
         if ((name || fbId || username) && /(^|\.)facebook\.com$/.test(profile.hostname)) {
           const profileUrl = fbId ? `https://www.facebook.com/profile.php?id=${fbId}` : username ? `https://www.facebook.com/${encodeURIComponent(username)}` : null;
-          const pictures = [...document.querySelectorAll('[role="main"] img, main img, [role="main"] svg image, main svg image')]
+          const path = current.pathname.replace(/^\/|\/$/g, "");
+          const profilePage = path && !path.includes("/") && (!excluded.test(path) || path === "me" || path === "profile.php");
+          const pictures = (profilePage ? [...document.querySelectorAll('[role="main"] img, main img, [role="main"] svg image, main svg image')] : [])
             .filter(el => {
-              if (el.closest('[role="dialog"]')) return false;
+              if (el.closest('[role="dialog"], [role="article"]')) return false;
               const parent = el.closest('a, [role="button"]');
               const description = [el.getAttribute("alt"), el.getAttribute("aria-label"), parent?.getAttribute("aria-label")].filter(Boolean).join(" ");
               const rect = el.getBoundingClientRect();
-              return rect.width >= 64 && rect.height >= 64 &&
-                (name && description.toLowerCase().includes(name.toLowerCase()) || /profile picture|头像|大頭貼/i.test(description));
+              return rect.width >= 100 && rect.height >= 100 && rect.width / rect.height > 0.8 && rect.width / rect.height < 1.25 &&
+                !/cover|封面/i.test(description) && /profile picture|头像|大頭貼/i.test(description) &&
+                (!name || !el.getAttribute("alt") || description.toLowerCase().includes(name.toLowerCase()) || /^(profile picture|头像|大頭貼)$/i.test(description));
             }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
           const picture = pictures[0];
           const linkPicture = ownLink?.querySelector('img, svg image');
           const accountMenu = document.querySelector('[aria-label="Your profile"], [aria-label="你的个人主页"], [aria-label="你的头像"], [aria-label="您的个人主页"], [aria-label="你的個人檔案"], [aria-label="你的大頭貼"]');
           const menuPicture = accountMenu?.querySelector('img, svg image');
-          const avatarUrl = user?.picture || picture?.currentSrc || picture?.src || picture?.getAttribute("href") || picture?.getAttribute("xlink:href") || linkPicture?.currentSrc || linkPicture?.src || linkPicture?.getAttribute("href") || linkPicture?.getAttribute("xlink:href") || menuPicture?.currentSrc || menuPicture?.src || menuPicture?.getAttribute("href") || menuPicture?.getAttribute("xlink:href") || document.querySelector('meta[property="og:image"]')?.content || null;
+          const source = el => el?.currentSrc || el?.src || el?.getAttribute("href") || el?.getAttribute("xlink:href");
+          const avatarUrl = source(picture) || user?.picture || source(linkPicture) || source(menuPicture) || null;
           partial = {fb_name: name || null, fb_id: fbId, fb_username: username, profile_url: profileUrl, avatar_url: avatarUrl};
           if (name && (fbId || username)) return partial;
         }
@@ -195,7 +224,7 @@ async function getFBIdentity() {
           fb_id: identity?.fb_id || home.fb_id,
           fb_username: identity?.fb_username || home.fb_username,
           profile_url: identity?.profile_url || home.profile_url,
-          avatar_url: identity?.avatar_url || home.avatar_url
+          avatar_url: home.avatar_url || identity?.avatar_url
         };
         if (identity.fb_name && identity.profile_url) delete identity.identity_error;
       } catch (error) {
@@ -229,7 +258,11 @@ async function avatarStep(tabId, step) {
     args: [step]
   });
   const result = results[0]?.result;
-  if (!result || result.error) throw new Error(result?.error || "头像页面已关闭或跳转");
+  if (!result || result.error) {
+    const error = new Error(result?.error || "头像页面已关闭或跳转");
+    error.pageError = !!result?.error;
+    throw error;
+  }
   return result.value;
 }
 
@@ -270,6 +303,7 @@ async function runAvatarChange(filePath, expectedProfile) {
   let chooserListener;
   let chooserTimer;
   const operationSocket = ws;
+  let baseline = null;
   const report = (success, error = "", confirmed = true, avatarData = null) => {
     if (operationSocket?.readyState === WebSocket.OPEN) {
       operationSocket.send(JSON.stringify({type: "avatar_result", client_id: clientId, success, error, confirmed, avatar_data: avatarData}));
@@ -282,6 +316,7 @@ async function runAvatarChange(filePath, expectedProfile) {
     if (!expectedProfile || !/^https:\/\/www\.facebook\.com\//.test(expectedProfile)) throw new Error("账号尚未识别，请重新连接插件");
     const tab = await createProfileTab();
     target = {tabId: tab.id};
+    avatarOperation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false};
     const checkAccount = async () => {
       if (ws !== operationSocket || operationSocket?.readyState !== WebSocket.OPEN) throw new Error("本地连接已断开，请检查头像后重试");
       await verifyAvatarAccount(tab.id, expectedProfile);
@@ -290,11 +325,15 @@ async function runAvatarChange(filePath, expectedProfile) {
       ws.send(JSON.stringify({type: "status", status: "change_avatar", client_id: clientId}));
     }
     await checkAccount();
+    baseline = (await readProfileIdentity(tab.id)).avatar_url;
+    await activateTab(tab.id);
     await chrome.debugger.attach(target, "1.3");
     attached = true;
     await chrome.scripting.executeScript({target, files: ["change_avatar.js"]});
+    await chrome.scripting.executeScript({target, func: id => { window.__fbAvatar.operationId = id; }, args: [avatarOperation.id]});
     const mode = await avatarStep(tab.id, "prepare");
     await checkAccount();
+    await activateTab(tab.id);
     if (mode === "input") {
       const {root} = await chrome.debugger.sendCommand(target, "DOM.getDocument", {depth: 1, pierce: true});
       const {nodeId} = await chrome.debugger.sendCommand(target, "DOM.querySelector", {nodeId: root.nodeId, selector: 'input[data-fb-avatar-upload="true"]'});
@@ -322,6 +361,7 @@ async function runAvatarChange(filePath, expectedProfile) {
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: false});
     }
     await checkAccount();
+    await activateTab(tab.id);
     const saved = await avatarStep(tab.id, "save");
     let avatarData = null;
     if (saved?.confirmed === true) {
@@ -332,7 +372,24 @@ async function runAvatarChange(filePath, expectedProfile) {
     }
     report(true, "", saved?.confirmed === true, avatarData);
   } catch (error) {
-    report(false, error.message || String(error));
+    if (avatarOperation?.submitted && !error.pageError) {
+      // A navigation can destroy the save script after Facebook accepted the click.
+      let identity;
+      try {
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const tab = await chrome.tabs.get(target.tabId);
+          if (tab.status !== "loading") { identity = await readProfileIdentity(target.tabId); break; }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        if (identity && identity.profile_url !== expectedProfile) throw new Error("保存后账号发生变化，请人工核对");
+        const photoKey = value => { try { return new URL(value).pathname; } catch { return value; } };
+        const confirmed = !!(identity?.avatar_url && baseline && photoKey(identity.avatar_url) !== photoKey(baseline));
+        report(true, confirmed ? "" : "已点击保存，页面已关闭或跳转，请核对头像", confirmed,
+          confirmed ? await loadAvatarThumbnail(identity.avatar_url) : null);
+      } catch (verificationError) {
+        report(true, `已点击保存，无法确认结果: ${verificationError.message}`, false);
+      }
+    } else report(false, error.message || String(error));
   } finally {
     clearTimeout(chooserTimer);
     if (chooserListener) chrome.debugger.onEvent.removeListener(chooserListener);
@@ -341,6 +398,7 @@ async function runAvatarChange(filePath, expectedProfile) {
       await chrome.debugger.detach(target).catch(() => {});
     }
     if (target) await closeTaskTab(target.tabId);
+    avatarOperation = null;
     avatarBusy = false;
   }
 }
@@ -551,6 +609,7 @@ function reportError(error) {
   safeSend({type: "status", status: "activity_error", error: error.message || String(error)});
 }
 async function handleAction(msg) {
+  if (msg.action === "locate_browser") return locateBrowser();
   if (msg.action === "stop_scroll") return stopActivity();
   if (msg.action === "scroll30") return startActivity("home");
   if (msg.action === "auto_group") return startActivity("group");
@@ -652,7 +711,21 @@ chrome.windows.onCreated.addListener(() => {
   browserClosed = false;
   connect();
 });
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.cmd === "fb_avatar_activate") {
+    if (avatarOperation?.tabId !== sender.tab?.id || avatarOperation?.id !== msg.operationId) {
+      sendResponse({accepted: false});
+      return;
+    }
+    activateTab(sender.tab.id).then(() => sendResponse({accepted: true}), () => sendResponse({accepted: false}));
+    return true;
+  }
+  if (msg.cmd === "fb_avatar_submitting") {
+    const accepted = avatarOperation?.tabId === sender.tab?.id && avatarOperation?.id === msg.operationId;
+    if (accepted) avatarOperation.submitted = true;
+    sendResponse({accepted});
+    return;
+  }
   if (msg.cmd === "connect_py") {
     if (ws?.readyState === WebSocket.OPEN && !avatarBusy) initializeAccount(ws).catch(reportError);
     else connect();

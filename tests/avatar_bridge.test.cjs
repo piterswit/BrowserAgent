@@ -9,17 +9,18 @@ function bridge(mode, failure, identityError = "") {
   const messages = [], commands = [], events = new Set(), updates = new Set();
   const created = [], removed = [], navigated = [], tabRemoved = new Set();
   const windowRemoved = new Set();
+  const runtimeMessages = new Set();
   const identity = {fb_name: "Test Account", fb_id: "123", profile_url: "https://www.facebook.com/profile.php?id=123", avatar_url: "https://scontent.example.fbcdn.net/photo.jpg"};
   let detached = 0;
   const chrome = {
-    windows: {getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
+    windows: {update: async () => {}, getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
     storage: {session: {get: async () => ({}), set: async () => {}}},
     alarms: {clear: async () => {}, create: async () => {}, onAlarm: {addListener() {}}},
     tabs: {
       query: async () => [{id: 7, url: "https://www.facebook.com/"}],
       create: async options => { created.push(options); return {id: 99}; },
       remove: async id => { removed.push(id); },
-      get: async () => ({url: "https://www.facebook.com/profile.php?id=123"}),
+      get: async () => ({windowId: 1, url: "https://www.facebook.com/profile.php?id=123"}),
       update: async (id, options) => {
         navigated.push({id, options});
         for (const listener of updates) listener(id, {status: "complete"}, {url: "about:blank"});
@@ -28,7 +29,7 @@ function bridge(mode, failure, identityError = "") {
       onRemoved: {addListener: fn => tabRemoved.add(fn), removeListener: fn => tabRemoved.delete(fn)},
       onUpdated: {addListener: fn => updates.add(fn), removeListener: fn => updates.delete(fn)}
     },
-    runtime: {onMessage: {addListener() {}}},
+    runtime: {onMessage: {addListener: fn => runtimeMessages.add(fn)}},
     scripting: {executeScript: async options => {
       if (options.files) return [];
       if (!options.args) return [{result: identityError ? {error: identityError} : identity}];
@@ -56,7 +57,7 @@ function bridge(mode, failure, identityError = "") {
   vm.runInContext(source, context);
   context.sendMessage = value => messages.push(JSON.parse(value));
   vm.runInContext("ws = {readyState: WebSocket.OPEN, send: sendMessage}", context);
-  return {context, chrome, messages, commands, events, identity, created, removed, navigated, tabRemoved, windowRemoved,
+  return {context, chrome, messages, commands, events, identity, created, removed, navigated, tabRemoved, windowRemoved, runtimeMessages,
     permanentTabListeners: tabRemoved.size, detached: () => detached};
 }
 
@@ -73,6 +74,7 @@ for (const mode of ["input", "chooser"]) {
     assert.equal(b.created[0].active, false);
     assert.equal(b.navigated[0].id, 99);
     assert.equal(b.navigated[0].options.active, false);
+    assert.ok(b.navigated.filter(item => item.options.active === true).length >= 3);
     assert.equal(b.messages.at(-1).confirmed, true);
     assert.equal(vm.runInContext("avatarBusy", b.context), false);
   });
@@ -84,6 +86,95 @@ test("save failure reports an error and releases debugger", async () => {
   assert.equal(b.messages.at(-1).error, "test failure");
   assert.equal(b.detached(), 1);
   assert.deepEqual(b.removed, [99]);
+});
+
+for (const changed of [false, true]) {
+  test(`save context lost after submission is ${changed ? "confirmed by changed avatar" : "pending, not failed"}`, async () => {
+    const b = bridge("input");
+    const original = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => {
+      if (options.args?.[0] !== "save") return original(options);
+      const operation = vm.runInContext("avatarOperation", b.context);
+      for (const listener of b.runtimeMessages) listener({cmd: "fb_avatar_submitting", operationId: operation.id}, {tab: {id: 99}}, response => assert.equal(response.accepted, true));
+      if (changed) b.identity.avatar_url = "https://scontent.example.fbcdn.net/new-photo.jpg";
+      return [];
+    };
+    await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+    assert.equal(b.messages.at(-1).success, true);
+    assert.equal(b.messages.at(-1).confirmed, changed);
+    assert.deepEqual(b.removed, [99]);
+    assert.equal(vm.runInContext("avatarOperation", b.context), null);
+  });
+}
+
+test("script loss before Save remains a failure", async () => {
+  const b = bridge("input");
+  const original = b.chrome.scripting.executeScript;
+  b.chrome.scripting.executeScript = async options => options.args?.[0] === "save" ? [] : original(options);
+  await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+  assert.equal(b.messages.at(-1).success, false);
+});
+
+test("closed tab after submission remains pending, not an upload failure", async () => {
+  const b = bridge("input");
+  const original = b.chrome.scripting.executeScript;
+  b.chrome.scripting.executeScript = async options => {
+    if (options.args?.[0] !== "save") return original(options);
+    vm.runInContext("avatarOperation.submitted = true", b.context);
+    b.chrome.tabs.get = async () => { throw new Error("tab closed"); };
+    throw new Error("context destroyed");
+  };
+  await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+  assert.equal(b.messages.at(-1).success, true);
+  assert.equal(b.messages.at(-1).confirmed, false);
+});
+
+test("unrelated tab cannot acknowledge an avatar Save", async () => {
+  const b = bridge("input");
+  vm.runInContext('avatarOperation = {id: "token", tabId: 99, submitted: false}', b.context);
+  for (const listener of b.runtimeMessages) {
+    listener({cmd: "fb_avatar_submitting", operationId: "token"}, {tab: {id: 7}}, response => assert.equal(response.accepted, false));
+    listener({cmd: "fb_avatar_submitting", operationId: "old-token"}, {tab: {id: 99}}, response => assert.equal(response.accepted, false));
+  }
+  assert.equal(vm.runInContext("avatarOperation.submitted", b.context), false);
+});
+
+test("explicit Facebook errors stay failures after Save submission", async () => {
+  const b = bridge("input", "save");
+  const original = b.chrome.scripting.executeScript;
+  b.chrome.scripting.executeScript = async options => {
+    if (options.args?.[0] === "save") vm.runInContext("avatarOperation.submitted = true", b.context);
+    return original(options);
+  };
+  await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+  assert.equal(b.messages.at(-1).success, false);
+});
+
+test("locate browser activates the existing FB tab without navigating or creating tabs", async () => {
+  const b = bridge("input");
+  const focused = [];
+  b.chrome.windows.update = async (id, options) => focused.push({id, options});
+  await vm.runInContext('handleAction({action: "locate_browser"})', b.context);
+  assert.equal(focused[0].id, 1);
+  assert.equal(focused[0].options.focused, true);
+  assert.equal(b.navigated[0].id, 7);
+  assert.equal(b.navigated[0].options.active, true);
+  assert.equal(b.navigated[0].options.url, undefined);
+  assert.equal(b.created.length, 0);
+});
+
+test("homepage never takes feed authors or OG cover images as own avatar", async () => {
+  const b = bridge("input");
+  accountDocument(b, {USER_ID: "123", NAME: "Alice"}, {picture: "https://scontent.example.fbcdn.net/cover.jpg"});
+  b.context.location = {href: "https://www.facebook.com/"};
+  const original = b.context.document.querySelectorAll;
+  b.context.document.querySelectorAll = selector => selector.startsWith('[role="main"] img') ? [{
+    currentSrc: "https://scontent.example.fbcdn.net/bob.jpg", closest: () => null,
+    getAttribute: () => "Bob's profile picture", getBoundingClientRect: () => ({width: 168, height: 168, top: 0})
+  }] : original(selector);
+  const identity = await vm.runInContext("readProfileIdentity(99)", b.context);
+  assert.equal(identity.fb_id, "123");
+  assert.equal(identity.avatar_url, null);
 });
 test("invalid paths never attach debugger", async () => {
   const b = bridge("input");
@@ -313,7 +404,7 @@ for (const script of [false, true]) {
   });
 }
 
-test("missing name does not discard an already-read account ID or avatar", async () => {
+test("missing name preserves ID but never uses ambiguous OG images as avatars", async () => {
   const b = bridge("input");
   accountDocument(b, {USER_ID: "10001234567"}, {headings: ["Notifications"], picture: "https://scontent.example.fbcdn.net/alice.jpg"});
   let clock = 0;
@@ -322,7 +413,7 @@ test("missing name does not discard an already-read account ID or avatar", async
   const identity = await vm.runInContext("readProfileIdentity(99)", b.context);
   assert.equal(identity.fb_id, "10001234567");
   assert.equal(identity.fb_name, null);
-  assert.equal(identity.avatar_url, "https://scontent.example.fbcdn.net/alice.jpg");
+  assert.equal(identity.avatar_url, null);
   assert.match(identity.identity_error, /未读取到账号名字/);
 });
 
