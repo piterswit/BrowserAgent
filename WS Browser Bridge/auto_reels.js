@@ -1,168 +1,97 @@
-// ===== 基础工具 =====
-function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-
-function isVisible(el){
-  if(!el) return false;
-  const r = el.getBoundingClientRect();
-  return r.width>0 && r.height>0 && r.bottom>0 && r.top < innerHeight;
-}
-
-function humanClick(el){
-  const r = el.getBoundingClientRect();
-  const x = r.left + r.width/2;
-  const y = r.top + r.height/2;
-  const o = {bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
-
-  el.dispatchEvent(new PointerEvent("pointerdown",o));
-  el.dispatchEvent(new MouseEvent("mousedown",o));
-  el.dispatchEvent(new PointerEvent("pointerup",o));
-  el.dispatchEvent(new MouseEvent("mouseup",o));
-  el.dispatchEvent(new MouseEvent("click",o));
-}
-
-function keyNav(key){
-  document.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true}));
-  document.dispatchEvent(new KeyboardEvent("keyup",{key,bubbles:true}));
-}
-
-
-// ===== 点击取消静音按钮 =====
-function clickIfUnmute() {
-  const keywords = [
-    "取消静音",   // 简体
-    "取消靜音",   // 繁体
-    "unmute"      // 英文
-  ];
-
-  const buttons = document.querySelectorAll('[role="button"]');
-
-  for (const btn of buttons) {
-    const text = (
-      btn.getAttribute("aria-label") ||
-      btn.innerText ||
-      ""
-    ).trim().toLowerCase();
-
-    if (
-      keywords.some(k =>
-        text.includes(k.toLowerCase())
-      )
-    ) {
-      btn.click();
-      console.log("已点击:", text);
-      return true;
-    }
-  }
-
-  console.log("未找到匹配按钮");
-  return false;
-}
-
-
-// ===== reels 导航 =====
-// 找到真正可滚动容器
-let __scroller = null;
-
-function getScroller(){
-  if(__scroller && __scroller.isConnected) return __scroller;
-
-  const root = document.scrollingElement || document.documentElement;
-  if(root.scrollHeight > root.clientHeight){
-    __scroller = root;
-    return __scroller;
-  }
-
-  let el = document.elementFromPoint(innerWidth/2, innerHeight/2);
-  while(el && el !== document.body){
-    const s = getComputedStyle(el);
-    if((s.overflowY === "auto" || s.overflowY === "scroll") &&
-       el.scrollHeight > el.clientHeight){
-      __scroller = el;
-      return __scroller;
-    }
-    el = el.parentElement;
-  }
-
-  __scroller = root;
-  return __scroller;
-}
-
-function smoothScroll(dy){
-  getScroller().scrollBy({top:dy,behavior:"smooth"});
-}
-
-function nextReel(){
-  const k = 0.7 + Math.random()*0.6; // 0.7 ~ 1.3
-  smoothScroll(innerHeight * k);
-}
-
-function prevReel(){
-  const k = 0.7 + Math.random()*0.6;
-  smoothScroll(-innerHeight * k);
-}
-
-
-// ===== 随机交互 =====
-function doLike(){
-  console.log('尝试点赞当前 Reels...');
-  const btn = [...document.querySelectorAll('[role="button"]')]
-    .find(el=>{
-      const t = (el.getAttribute("aria-label")||"").toLowerCase();
-      return /(讚好|赞好|赞|讚|like)/.test(t);
+(() => {
+  const ctrl = window.__fbActivityRuntime?.create("reels");
+  if (!ctrl) return;
+  const random = (min, max) => min + Math.random() * (max - min);
+  let lastBackwards = false;
+  const labels = {
+    next: /^(Next( reel| video)?|Go to next (reel|video)|下一(个|個|部|段)?(短视频|视频|影片|Reel)?|下一則|下一则)$/i,
+    previous: /^(Previous( reel| video)?|Go to previous (reel|video)|上一(个|個|部|段)?(短视频|视频|影片|Reel)?|上一則|上一则)$/i
+  };
+  const visible = node => {
+    if (!node?.isConnected || node.disabled || node.getAttribute("aria-disabled") === "true") return false;
+    if (!window.__fbActivityRuntime.visible(node)) return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight &&
+      rect.right > 0 && rect.left < innerWidth;
+  };
+  function viewer() {
+    const videos = [...document.querySelectorAll("video")].filter(visible);
+    videos.sort((a, b) => {
+      const area = node => { const r = node.getBoundingClientRect();
+        return Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
+          Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0)); };
+      return area(b) - area(a);
     });
-
-  if(btn){
-    btn.click();
-    return true;
+    const video = videos[0];
+    const root = video?.closest('[role="dialog"], [role="main"]') || document.querySelector('[role="main"]') || document;
+    const controls = [...root.querySelectorAll('[role="button"], button')].filter(visible);
+    const find = direction => controls.find(node => labels[direction].test(
+      (node.getAttribute("aria-label") || node.getAttribute("title") || node.innerText || "").trim()));
+    const next = find("next"), previous = find("previous");
+    ctrl.playerScope = root.getAttribute?.("role") === "dialog" && video ? root : null;
+    return {video, next, previous};
   }
-  return false;
-}
-
-
-// ===== 主循环 =====
-async function autoReels(){
-  if(window.__reelCtrl){
-    window.__reelCtrl.run=false;
-  }
-
-  const ctrl={run:true};
-  window.__reelCtrl=ctrl;
-
-  // 等待加载，并点击取消静音
-  await sleep(rand(3000,6180));
-  clickIfUnmute();
-
-  console.log('开始自动浏览 Reels...');
-  while(ctrl.run){
-    if(document.hidden){
-      await sleep(2000);
-      continue;
-    }
-
-    if(Math.random()<0.618)
-        await sleep(rand(2000,6180));
-    else
-        await sleep(rand(2000,15000));
-    // await maybeLike();
-
-    if(Math.random()<0.03){
-      location.reload();
+  async function turn() {
+    const current = viewer();
+    if (!ctrl.canAct()) return;
+    const backwards = !lastBackwards && Math.random() < 0.06;
+    lastBackwards = backwards;
+    const button = backwards ? current.previous || current.next : current.next;
+    if (button) {
+      await ctrl.sleep(random(200, 500));
+      ctrl.guard();
+      if (ctrl.canAct() && visible(button)) {
+        button.click();
+        ctrl.report("正在浏览 Reels");
+      }
       return;
     }
-
-    if(Math.random()<0.04){
-      prevReel();
-    }else{
-      nextReel();
+    let element = current.video || document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+    while (element) {
+      const style = getComputedStyle(element);
+      const horizontal = element.scrollWidth > element.clientWidth + 100 && /auto|scroll/.test(style.overflowX);
+      const vertical = element.scrollHeight > element.clientHeight + 100 && /auto|scroll/.test(style.overflowY);
+      if (horizontal || vertical) {
+        const axis = horizontal ? "x" : "y";
+        const size = horizontal ? element.clientWidth : element.clientHeight;
+        const rtl = horizontal && style.direction === "rtl" ? -1 : 1;
+        // One full viewport also works with mandatory CSS scroll snapping.
+        await ctrl.scroll(element, size * (backwards ? -1 : 1) * rtl, axis, 1);
+        return;
+      }
+      element = element.parentElement;
     }
-
-    if(Math.random()<0.04)
-      await doLike();
-    if(Math.random()<0.04)
-      await sleep(rand(8000,45000));
+    await ctrl.scroll(window, innerHeight * 0.9 * (backwards ? -1 : 1));
   }
-}
-
-autoReels();
-// clickLike();
+  function watchingDelay() {
+    const video = viewer().video;
+    const kind = Math.random();
+    if (kind < 0.2) return random(1500, 3000);
+    if (kind > 0.97) return random(8000, 12000);
+    const remaining = video && Number.isFinite(video.duration) && Number.isFinite(video.currentTime) ?
+      Math.max(0, video.duration - video.currentTime) : 0;
+    return remaining > 0 ? Math.max(3000, Math.min(8000, remaining * random(0.12, 0.25) * 1000)) : random(3000, 6000);
+  }
+  (async () => {
+    const interactions = window.__fbActivityInteractions(ctrl);
+    ctrl.started = true;
+    let first = true;
+    while (ctrl.run) {
+      await ctrl.sleep(first ? random(1000, 2000) : watchingDelay());
+      first = false;
+      ctrl.guard();
+      viewer();
+      if (!ctrl.canAct()) continue;
+      try { await interactions.maybeInteract(["like"]); }
+      catch (error) { if (error.name === "AbortError") throw error; }
+      ctrl.guard();
+      if (!ctrl.canAct()) continue;
+      await turn();
+    }
+  })().catch(error => {
+    if (error.name !== "AbortError") {
+      ctrl.report("Reels 翻页失败：" + error.message, true);
+      ctrl.stop(true);
+    }
+  });
+})();

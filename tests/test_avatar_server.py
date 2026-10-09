@@ -48,6 +48,59 @@ class AvatarServerTest(unittest.TestCase):
         self.assertNotIn("a", self.app.last_seen)
         self.assertNotIn("a", self.app.accounts)
 
+    def test_custom_activity_sends_its_own_action(self):
+        sent = []
+        self.app.ports = {"a": 8765}
+        self.app.loop = object()
+
+        async def capture(port, cid, data):
+            sent.append((cid, data))
+
+        self.app.send = capture
+        with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
+            self.app.auto_custom()
+        self.assertEqual(sent, [("a", {"action": "auto_custom"})])
+
+    def test_activity_pause_reason_reaches_the_result_column(self):
+        details = []
+        self.app.register_client_ui = lambda *args: None
+        self.app.set_activity_detail = lambda cid, detail: details.append((cid, detail))
+
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"})
+            yield json.dumps({"type": "activity_detail", "detail": "暂停：页面存在可见弹窗或菜单"})
+
+        class Socket:
+            def __aiter__(self):
+                return messages()
+
+        asyncio.run(self.app.ws_handler(Socket(), 8765))
+        self.assertEqual(details, [("a", "暂停：页面存在可见弹窗或菜单")])
+
+    def test_stop_is_pending_until_browser_acknowledges(self):
+        sent = []
+        callbacks = []
+        self.app.ports = {"a": 8765}
+        self.app.loop = object()
+        self.app.root = SimpleNamespace(after=lambda delay, fn: callbacks.append(fn))
+
+        async def capture(port, cid, data):
+            sent.append((cid, data))
+
+        self.app.send = capture
+        with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
+            self.app.stop_scroll()
+        self.assertEqual(self.states[-1], ("a", "正在停止"))
+        self.assertEqual(sent, [("a", {"action": "stop_scroll"})])
+        self.assertEqual(len(callbacks), 1)
+
+    def test_stop_confirmation_timeout_is_not_success(self):
+        errors = []
+        self.app.list_view = SimpleNamespace(exists=lambda cid: True, set=lambda *args: "正在停止")
+        self.app.activity_error = lambda cid, detail: errors.append((cid, detail))
+        self.app.check_stop_confirmation("a")
+        self.assertIn("未收到停止确认", errors[0][1])
+
     def test_real_websocket_disconnect_removes_account(self):
         import websockets
         ready = asyncio.Event()

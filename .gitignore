@@ -4,3 +4,4 @@
 /1
 /release
 *.pyc
+/conf/

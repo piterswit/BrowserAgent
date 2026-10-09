@@ -56,8 +56,8 @@ def main():
             check(root)
             assert app.list_view.winfo_height() > 100
             row_box = app.list_view.bbox("preview-1", "#0")
-            assert row_box and row_box[3] == 48
-            assert row_box[3] >= app.avatar_photos["preview-1"].height() + 12
+            assert row_box and row_box[3] == 40
+            assert row_box[3] >= app.avatar_photos["preview-1"].height() + 4
         assert app.list_view.set("preview-1", "state") == "头像已更新"
         assert app.list_view.set("preview-2", "state") == "待确认"
         assert app.selected_targets() == ["preview-1", "preview-2"]

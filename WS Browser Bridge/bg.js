@@ -345,30 +345,15 @@ async function runAvatarChange(filePath, expectedProfile) {
   }
 }
 
-function openAndInject(url, file){
-  chrome.tabs.query({active:true,currentWindow:true}, ([tab])=>{
-    if(!tab) return;
-
-    chrome.tabs.update(tab.id,{url}, (updatedTab)=>{
-      const listener = (tabId, info)=>{
-        if(tabId === updatedTab.id && info.status === "complete"){
-          chrome.tabs.onUpdated.removeListener(listener);
-
-          chrome.scripting.executeScript({
-            target:{tabId:updatedTab.id},
-            files:[file]
-          });
-        }
-      };
-
-      chrome.tabs.onUpdated.addListener(listener);
-    });
-  });
-}
-
 let identityPromise = null;
+let identitySocket = null;
 async function initializeAccount(socket) {
-  if (identityPromise) return identityPromise;
+  if (identityPromise) {
+    if (identitySocket === socket) return identityPromise;
+    await identityPromise;
+    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+  }
+  identitySocket = socket;
   identityPromise = (async () => {
     try {
       const identity = await getFBIdentity();
@@ -376,213 +361,352 @@ async function initializeAccount(socket) {
         socket.send(JSON.stringify({type: "init", client_id: clientId, ...identity}));
       }
     } catch (error) {
-      console.warn("FB account identification failed:", error.message);
-      if (ws === socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({type: "init", client_id: clientId, fb_name: "未识别账号", identity_error: error.message}));
-      }
-    } finally {
-      identityPromise = null;
-    }
+      safeSend({type: "init", fb_name: "未识别账号", identity_error: error.message}, socket);
+    } finally { identityPromise = null; identitySocket = null; }
   })();
   return identityPromise;
 }
 
-function connect(i=0){
-  if(ws && ws.readyState===WebSocket.OPEN){
-    return;
-  }
-  if(ws){
-    if(ws.readyState === WebSocket.CONNECTING){
-      return;
-    }
-    try{ ws.close(); }catch{}
-    ws = null;
-  }
-
-  if(i>=PORTS.length){
-    return;
-  }
-
-  try {
-    ws=new WebSocket(`ws://127.0.0.1:${PORTS[i]}`);
-  } catch(e){
-    setTimeout(()=>connect(i+1),1000);
-    return;
-  }
-
-  const socket = ws;
-  let opened = false;
-  socket.onopen=()=>{
-    opened = true;
-    initializeAccount(socket);
-  };
-
-  ws.onmessage=e=>{
-    const msg=JSON.parse(e.data);
-
-    if(msg.action==="open"){
-      chrome.tabs.create({url:msg.url});
-    }
-
-    if(msg.action==="scroll"){
-      chrome.tabs.query({active:true,currentWindow:true},tabs=>{
-        if(!tabs.length) return;
-        chrome.scripting.executeScript({
-          target:{tabId:tabs[0].id},
-          func:dy=>window.scrollBy({top:dy,behavior:"smooth"}),
-          args:[msg.dy]
-        });
-      });
-    }
-    if (msg.action === "scroll30") {
-      ws.send(JSON.stringify({type:"status", status:"auto_main_page", client_id:clientId}));
-      chrome.tabs.query({active:true,currentWindow:true},tabs=>{
-        if(!tabs.length) return;
-        chrome.scripting.executeScript({
-          target:{tabId:tabs[0].id},
-          files:["tools.js"]
-        });
-      });
-    }
-    if (msg.action === "auto_reels") {
-      ws.send(JSON.stringify({type:"status", status:"auto_reels", client_id:clientId}));
-      openAndInject("https://www.facebook.com/reel/", "auto_reels.js");
-    }
-    if (msg.action === "auto_group") {
-      ws.send(JSON.stringify({type:"status", status:"auto_group", client_id:clientId}));
-      openAndInject("https://www.facebook.com/groups/feed/", "tools.js");
-    }
-    if (msg.action === "cancel_friend_requests") {
-      ws.send(JSON.stringify({type:"status", status:"cancel_friend_requests", client_id:clientId}));
-      openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
-    }
-
-    if (msg.action === "stop_scroll") {
-      ws.send(JSON.stringify({type:"status", status:"stop", client_id:clientId}));
-      chrome.tabs.query({active:true,currentWindow:true},tabs=>{
-        if(!tabs.length) return;
-        chrome.scripting.executeScript({
-          target:{tabId:tabs[0].id},
-          func: (url)=>{
-            window.location.href = url;
-          },
-          args:["https://www.facebook.com/"]
-        });
-      });
-    }
-
-    if (msg.action === "change_avatar") {
-      runAvatarChange(msg.file_path, msg.profile_url);
-    }
-
-  };
-
-  ws.onclose=()=>{
-    if (ws !== socket) return;
-    // 停止页面滚动
-    chrome.tabs.query({},tabs=>{
-      for(const t of tabs){
-        chrome.scripting.executeScript({
-          target:{tabId:t.id},
-          func:()=>{
-            if(window.__hsCtrl){
-              window.__hsCtrl.stop();
-            }
-          }
-        }).catch(()=>{});
-      }
-    });
-
-    // 清理连接
-    ws=null;
-    if (!opened) setTimeout(() => connect(i + 1), 1000);
-  };
-
-  ws.onerror=()=>{
-    try{socket.close()}catch{}
-  };
+function safeSend(message, socket = ws) {
+  if (socket !== ws || socket?.readyState !== WebSocket.OPEN) return;
+  try { socket.send(JSON.stringify({...message, client_id: clientId})); } catch {}
+}
+function isFacebook(url) {
+  try { return /(^|\.)facebook\.com$/.test(new URL(url).hostname); } catch { return false; }
 }
 
-connect();
+let activityEpoch = Date.now();
+let activeRun = null;
+let autoSuppressed = false;
+const suppressionReady = chrome.storage.session.get("activitySuppressed").then(data => {
+  autoSuppressed = data.activitySuppressed === true;
+}).catch(() => {});
+const navigationCancels = new Set();
+const nextEpoch = () => {
+  activityEpoch = Math.max(Date.now(), activityEpoch + 1);
+  for (const cancel of navigationCancels) cancel();
+  return activityEpoch;
+};
 
-chrome.windows.onRemoved.addListener(async () => {
-  const windows = await chrome.windows.getAll({windowTypes: ["normal"]});
-  if (!windows.length && ws) {
-    const socket = ws;
-    socket.close(1000, "All browser windows closed");
-  }
-});
-
-chrome.runtime.onMessage.addListener((msg)=>{
-  if(msg.cmd==="connect_py"){
-    if (ws?.readyState === WebSocket.OPEN && !avatarBusy) initializeAccount(ws);
-    else connect();
-  }
-  else if(msg.cmd==="auto_active"){
-    chrome.tabs.query({active:true,currentWindow:true},tabs=>{
-      if(!tabs.length) return;
-
-      chrome.scripting.executeScript({
-        target:{tabId:tabs[0].id},
-        files:["tools.js"]
+async function stopTabs(epoch) {
+  const tabs = await chrome.tabs.query({});
+  const failures = [];
+  await Promise.all(tabs.filter(tab => isFacebook(tab.url) && !taskTabs.has(tab.id)).map(async tab => {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: {tabId: tab.id},
+        func: token => {
+          window.__fbActivityEpoch = Math.max(window.__fbActivityEpoch || 0, token);
+          window.__fbActivityRequest = null;
+          if (window.__fbActivityRuntime) {
+            window.__fbActivityRuntime.stop();
+            return false;
+          }
+          // Old injected scripts have untracked timers; reload once to remove them.
+          const legacy = !!(window.__hsCtrl || window.__reelCtrl);
+          for (const ctrl of [window.__hsCtrl, window.__reelCtrl]) {
+            if (!ctrl) continue;
+            ctrl.run = false;
+            if (ctrl.timer) clearTimeout(ctrl.timer);
+            if (typeof ctrl.stop === "function") ctrl.stop();
+          }
+          return legacy;
+        },
+        args: [epoch]
       });
+      if (results[0]?.result) await chrome.tabs.reload(tab.id);
+    } catch (error) {
+      // A closed/navigated tab cannot keep its old page script running.
+      const current = await chrome.tabs.get(tab.id).catch(() => null);
+      if (current && isFacebook(current.url) && current.status !== "loading") failures.push(error.message);
+    }
+  }));
+  if (failures.length) throw new Error(failures.join("; "));
+}
+async function stopActivity() {
+  const epoch = nextEpoch();
+  activeRun = null;
+  autoSuppressed = true;
+  await suppressionReady;
+  autoSuppressed = true;
+  await chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
+  await stopTabs(epoch);
+  if (activityEpoch === epoch) safeSend({type: "status", status: "stop"});
+}
+
+async function navigateActivity(tabId, url, epoch) {
+  await new Promise((resolve, reject) => {
+    let timer;
+    const finish = error => {
+      clearTimeout(timer);
+      navigationCancels.delete(cancel);
+      chrome.tabs.onUpdated.removeListener(updated);
+      chrome.tabs.onRemoved.removeListener(removed);
+      error ? reject(error) : resolve();
+    };
+    const cancel = () => finish(Object.assign(new Error("任务已取消"), {name: "AbortError"}));
+    navigationCancels.add(cancel);
+    const updated = (id, info, tab) => {
+      if (id !== tabId || info.status !== "complete") return;
+      if (activityEpoch !== epoch) return finish(new Error("任务已取消"));
+      if (!isFacebook(tab.url)) return finish(new Error("页面已离开 Facebook"));
+      finish();
+    };
+    const removed = id => { if (id === tabId) finish(new Error("页面已关闭")); };
+    chrome.tabs.onUpdated.addListener(updated);
+    chrome.tabs.onRemoved.addListener(removed);
+    timer = setTimeout(() => finish(new Error("页面加载超时")), 30000);
+    chrome.tabs.update(tabId, {url}).catch(finish);
+  });
+}
+
+function isReelsUrl(url) {
+  return isFacebook(url) && /^\/reels?(\/|$)/.test(new URL(url).pathname);
+}
+
+async function startActivity(mode, requestedTab = null, automatic = false) {
+  await suppressionReady;
+  if (automatic && (autoSuppressed || activeRun)) return;
+  const epoch = nextEpoch();
+  activeRun = null;
+  if (!automatic) {
+    autoSuppressed = false;
+    await chrome.storage.session.set({activitySuppressed: false});
+  }
+  await stopTabs(epoch);
+  if (activityEpoch !== epoch) return;
+  const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+  let tab = requestedTab ? await chrome.tabs.get(requestedTab) : tabs[0];
+  if (!tab || !isFacebook(tab.url) || taskTabs.has(tab.id)) {
+    tab = (await chrome.tabs.query({})).find(item => isFacebook(item.url) && !taskTabs.has(item.id));
+  }
+  if (!tab) throw new Error("请先打开已登录的 Facebook 页面");
+  const paths = {home: "/", group: "/groups/feed/", reels: "/reel/"};
+  const matches = url => mode === "custom" || (mode === "reels" ? isReelsUrl(url) : new URL(url).pathname === paths[mode]);
+  if (!automatic && !matches(tab.url)) {
+    await navigateActivity(tab.id, "https://www.facebook.com" + paths[mode], epoch);
+  }
+  if (activityEpoch !== epoch) return;
+  const currentTab = await chrome.tabs.get(tab.id);
+  if (!isFacebook(currentTab.url) || (!automatic && !matches(currentTab.url))) {
+    throw new Error("页面已被用户切换，活跃未启动");
+  }
+  if (activityEpoch !== epoch) return;
+  const runId = crypto.randomUUID();
+  activeRun = {runId, tabId: tab.id, epoch, mode};
+  try { await injectActivity(tab.id, mode, runId, epoch); }
+  catch (error) {
+    if (activityEpoch === epoch) activeRun = null;
+    throw error;
+  }
+}
+
+async function injectActivity(tabId, mode, runId, epoch) {
+  if (activityEpoch !== epoch) return;
+  await chrome.scripting.executeScript({
+    target: {tabId},
+    func: (token, request) => {
+      if ((window.__fbActivityEpoch || 0) > token) return;
+      window.__fbActivityEpoch = token;
+      window.__fbActivityRequest = request;
+      window.__fbActivityLastError = null;
+    },
+    args: [epoch, {runId, mode}]
+  });
+  if (activityEpoch !== epoch) return;
+  await chrome.scripting.executeScript({
+    target: {tabId},
+    files: ["activity_runtime.js", "activity_interactions.js", mode === "reels" ? "auto_reels.js" : "tools.js"]
+  });
+  if (activityEpoch !== epoch) return;
+  const [started] = await chrome.scripting.executeScript({target: {tabId},
+    func: function readActivityState() {
+      const ctrl = window.__fbActivityCtrl;
+      return {runId: ctrl?.runId, running: !!(ctrl?.run && ctrl.started),
+        detail: ctrl?.detail || window.__fbActivityLastError};
+    }});
+  if (activityEpoch !== epoch) return;
+  if (!started?.result?.running || started.result.runId !== runId) {
+    throw new Error(started?.result?.detail || "活跃脚本未启动，请重新加载插件后再试");
+  }
+  if (activityEpoch === epoch) safeSend({type: "status",
+    status: {home: "auto_main_page", group: "auto_group", custom: "auto_custom", reels: "auto_reels"}[mode]});
+  if (activityEpoch === epoch && started.result.detail) safeSend({type: "activity_detail", detail: started.result.detail});
+}
+
+async function openAndInject(url, file) {
+  const epoch = nextEpoch();
+  activeRun = null;
+  autoSuppressed = true;
+  await chrome.storage.session.set({activitySuppressed: true});
+  await stopTabs(epoch);
+  const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+  if (!tab) return;
+  await navigateActivity(tab.id, url, epoch);
+  if (activityEpoch !== epoch) return;
+  await chrome.scripting.executeScript({target: {tabId: tab.id}, files: [file]});
+}
+function reportError(error) {
+  if (error.name === "AbortError") return;
+  safeSend({type: "status", status: "activity_error", error: error.message || String(error)});
+}
+async function handleAction(msg) {
+  if (msg.action === "stop_scroll") return stopActivity();
+  if (msg.action === "scroll30") return startActivity("home");
+  if (msg.action === "auto_group") return startActivity("group");
+  if (msg.action === "auto_reels") return startActivity("reels");
+  if (msg.action === "auto_custom") return startActivity("custom");
+  if (msg.action === "change_avatar") {
+    await stopActivity();
+    return runAvatarChange(msg.file_path, msg.profile_url);
+  }
+  if (msg.action === "cancel_friend_requests") {
+    await openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
+    safeSend({type: "status", status: "cancel_friend_requests"});
+  }
+  if (msg.action === "open") await chrome.tabs.create({url: msg.url});
+  if (msg.action === "scroll") {
+    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+    if (tab && isFacebook(tab.url)) await chrome.scripting.executeScript({
+      target: {tabId: tab.id}, func: dy => window.scrollBy({top: dy, behavior: "instant"}), args: [msg.dy]
     });
   }
-  else if(msg.cmd==="auto_reels"){
-    openAndInject("https://www.facebook.com/reel/", "auto_reels.js");
-  }
-  else if(msg.cmd==="auto_group"){
-    openAndInject("https://www.facebook.com/groups/feed/", "tools.js");
-  }
-  else if(msg.cmd==="fb_bridge_active_stopped"){
-    if(ws && ws.readyState === WebSocket.OPEN){
-      ws.send(JSON.stringify({type:"status", status:"stop", client_id:clientId}));
-    }
-  }
-  else if(msg.cmd==="cancel_friend_requests"){
-    openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
-  }
-});
+}
 
-
-// 监听URL参数自动触发
-chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status !== "complete" || !tab.url) return;
-  if (taskTabs.has(tabId)) return;
-
+let retryTimer = null;
+let connectTimer = null;
+let retryDelay = 5000;
+let browserClosed = false;
+const RETRY_ALARM = "fb-bridge-reconnect";
+function clearRetry() {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  chrome.alarms.clear(RETRY_ALARM).catch(() => {});
+}
+function scheduleRetry(port) {
+  if (browserClosed || retryTimer !== null) return;
+  const delay = port < PORTS.length ? 750 : retryDelay;
+  if (port >= PORTS.length) retryDelay = Math.min(retryDelay * 2, 30000);
+  retryTimer = setTimeout(() => { retryTimer = null; connect(port % PORTS.length); }, delay);
+  chrome.alarms.create(RETRY_ALARM, {delayInMinutes: 1}).catch(() => {});
+}
+function connect(i = 0) {
+  if (browserClosed || retryTimer !== null || ws?.readyState === WebSocket.OPEN ||
+      ws?.readyState === WebSocket.CONNECTING) return;
+  let socket;
+  try { socket = new WebSocket("ws://127.0.0.1:" + PORTS[i]); }
+  catch { scheduleRetry(i + 1); return; }
+  ws = socket;
+  let opened = false;
+  const disconnected = () => {
+    if (ws !== socket) return;
+    clearTimeout(connectTimer);
+    connectTimer = null;
+    ws = null;
+    if (opened) stopActivity().catch(reportError);
+    scheduleRetry(opened ? PORTS.length : i + 1);
+  };
+  connectTimer = setTimeout(() => {
+    disconnected();
+    try { socket.close(); } catch {}
+  }, 3000);
+  socket.onopen = () => {
+    if (ws !== socket) { try { socket.close(); } catch {} return; }
+    opened = true;
+    clearTimeout(connectTimer);
+    connectTimer = null;
+    retryDelay = 5000;
+    clearRetry();
+    initializeAccount(socket).catch(reportError);
+  };
+  socket.onmessage = event => {
+    try { handleAction(JSON.parse(event.data)).catch(reportError); } catch {}
+  };
+  socket.onclose = disconnected;
+  socket.onerror = () => {
+    disconnected();
+    try { socket.close(); } catch {}
+  };
+}
+chrome.alarms.onAlarm.addListener(async alarm => {
+  if (alarm.name !== RETRY_ALARM) return;
+  if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
   try {
-    const url = new URL(tab.url);
-    //只要带参数 fb_bridge_auto_extension，就执行，https://example.com/?fb_bridge_auto_extension
-    if (url.searchParams.has("fb_bridge_auto_extension")) {
-      // 自动滚动
-      setTimeout(() => {
-        chrome.scripting.executeScript({
-          target: { tabId },
-          files: ["tools.js"]
-        });
-      }, 3000);
-    }
-    //https://www.facebook.com/?fb_bridge_connect_extension
-    if (tab.url.includes("facebook.com") && url.searchParams.has("fb_bridge_connect_extension")) {
-      connect();
-    }
-    if (tab.url.includes("facebook.com")) {
-      // 每次访问facebook都尝试连接一次（如果未连接）
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        connect();
-      }
-    }
-  } catch(e){}
+    browserClosed = !(await chrome.windows.getAll({windowTypes: ["normal"]})).length;
+    clearRetry();
+    connect();
+  } catch {}
 });
-
-
-// 连接心跳
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "heartbeat",
-      client_id: clientId
-    }));
+chrome.windows.onRemoved.addListener(async () => {
+  try {
+    const windows = await chrome.windows.getAll({windowTypes: ["normal"]});
+    if (windows.length) return;
+    browserClosed = true;
+    clearRetry();
+    clearTimeout(connectTimer);
+    const socket = ws;
+    if (socket) socket.close(1000, "All browser windows closed");
+  } catch {}
+});
+chrome.windows.onCreated.addListener(() => {
+  browserClosed = false;
+  connect();
+});
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg.cmd === "connect_py") {
+    if (ws?.readyState === WebSocket.OPEN && !avatarBusy) initializeAccount(ws).catch(reportError);
+    else connect();
+  } else if (msg.cmd === "fb_bridge_active_stopped") {
+    if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) {
+      activeRun = null;
+      autoSuppressed = true;
+      chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
+      if (msg.error) reportError(new Error(msg.error));
+      else safeSend({type: "status", status: "stop"});
+    }
+  } else if (msg.cmd === "fb_bridge_activity_detail") {
+    if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) {
+      if (msg.error) reportError(new Error(msg.detail));
+      else safeSend({type: "activity_detail", detail: msg.detail});
+    }
+  } else {
+    const action = {auto_active: "scroll30", auto_group: "auto_group", auto_reels: "auto_reels", auto_custom: "auto_custom",
+      cancel_friend_requests: "cancel_friend_requests", stop_scroll: "stop_scroll"}[msg.cmd];
+    if (action) handleAction({action}).catch(reportError);
   }
-}, 15000);
+});
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (activeRun?.tabId === tabId && activeRun.mode === "reels" &&
+      (info.url || info.status === "complete") && !isReelsUrl(info.url || tab.url)) {
+    stopActivity().catch(reportError);
+    return;
+  }
+  if (info.status === "loading" && activeRun?.tabId === tabId) {
+    if (activeRun.mode === "reels" && isReelsUrl(tab.url)) {
+      activeRun.needsResume = true;
+      return;
+    }
+    stopActivity().catch(reportError);
+    return;
+  }
+  if (info.status !== "complete" || taskTabs.has(tabId) || !isFacebook(tab.url)) return;
+  connect();
+  if (activeRun?.tabId === tabId && activeRun.needsResume) {
+    if (!isReelsUrl(tab.url)) { stopActivity().catch(reportError); return; }
+    const run = activeRun;
+    run.needsResume = false;
+    injectActivity(tabId, run.mode, run.runId, run.epoch).catch(reportError);
+    return;
+  }
+  const url = new URL(tab.url);
+  if (url.searchParams.has("fb_bridge_auto_extension")) startActivity("home", tabId, true).catch(reportError);
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+  if (activeRun?.tabId === tabId) stopActivity().catch(reportError);
+});
+setInterval(() => safeSend({type: "heartbeat"}), 15000);
+chrome.windows.getAll({windowTypes: ["normal"]}).then(windows => {
+  browserClosed = !windows.length;
+  connect();
+}).catch(() => {});
 

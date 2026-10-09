@@ -12,7 +12,9 @@ function bridge(mode, failure, identityError = "") {
   const identity = {fb_name: "Test Account", fb_id: "123", profile_url: "https://www.facebook.com/profile.php?id=123", avatar_url: "https://scontent.example.fbcdn.net/photo.jpg"};
   let detached = 0;
   const chrome = {
-    windows: {getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}},
+    windows: {getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
+    storage: {session: {get: async () => ({}), set: async () => {}}},
+    alarms: {clear: async () => {}, create: async () => {}, onAlarm: {addListener() {}}},
     tabs: {
       query: async () => [{id: 7, url: "https://www.facebook.com/"}],
       create: async options => { created.push(options); return {id: 99}; },
@@ -54,7 +56,8 @@ function bridge(mode, failure, identityError = "") {
   vm.runInContext(source, context);
   context.sendMessage = value => messages.push(JSON.parse(value));
   vm.runInContext("ws = {readyState: WebSocket.OPEN, send: sendMessage}", context);
-  return {context, chrome, messages, commands, events, identity, created, removed, navigated, tabRemoved, windowRemoved, detached: () => detached};
+  return {context, chrome, messages, commands, events, identity, created, removed, navigated, tabRemoved, windowRemoved,
+    permanentTabListeners: tabRemoved.size, detached: () => detached};
 }
 
 for (const mode of ["input", "chooser"]) {
@@ -96,7 +99,7 @@ test("identity lookup opens and closes only a background task tab", async () => 
   assert.equal(b.created[0].active, false);
   assert.deepEqual(b.removed, [99]);
   assert.deepEqual(b.navigated.map(item => item.id), [99]);
-  assert.equal(b.tabRemoved.size, 0);
+  assert.equal(b.tabRemoved.size, b.permanentTabListeners);
 });
 
 test("identity failure still cleans up its own tab", async () => {
@@ -112,7 +115,7 @@ test("closing a loading task tab rejects promptly without touching another tab",
   };
   await assert.rejects(vm.runInContext("getFBIdentity()", b.context), /标签页已被关闭/);
   assert.deepEqual(b.removed, [99]);
-  assert.equal(b.tabRemoved.size, 0);
+  assert.equal(b.tabRemoved.size, b.permanentTabListeners);
 });
 
 test("lost local connection stops before upload and releases resources", async () => {

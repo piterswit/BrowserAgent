@@ -16,6 +16,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
 import traceback
+from config_store import load_configuration, save_configuration
 
 PORT_RANGE = range(8765, 8770)
 
@@ -67,8 +68,13 @@ class App:
         self.ports = {}
         self.last_seen = {}  # 心跳包
         self.avatar_pending = set()
+        self.configuration = load_configuration()
+        self.config_timer = None
 
         self.build_ui()
+        self.avatar_directory.trace_add("write", self.schedule_config_save)
+        self.root.protocol("WM_DELETE_WINDOW", self.close_application)
+        self.schedule_config_save()
         self.center_window()
         self.scan()
         self.root.after(3000, self.check_alive)
@@ -96,7 +102,7 @@ class App:
         tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(12, 10))
         btnf = tb.Frame(frm)
         btnf.pack(fill="x", pady=(0, 12))
-        for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group)):
+        for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group), ("自定义活跃", self.auto_custom)):
             tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
         tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
         tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
@@ -104,7 +110,8 @@ class App:
         avatar_frame = tb.Frame(frm)
         avatar_frame.pack(fill="x", pady=(0, 12))
         tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
-        self.avatar_directory = tk.StringVar()
+        directory = self.configuration.get("avatar_directory", "")
+        self.avatar_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
         tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
         tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, bootstyle="secondary-outline", padding=(12, 8)).pack(side="left", padx=8)
         tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
@@ -275,12 +282,19 @@ class App:
 
                 # 3. 处理状态更新
                 elif data.get("type") == "status":
-                    status_map = {"auto_main_page": "活跃首页", "auto_reels": "活跃Reels", "auto_group": "活跃小组", "stop": "空闲", "cancel_friend_requests": "取消好友请求"}
+                    status_map = {"auto_main_page": "活跃首页", "auto_reels": "活跃Reels", "auto_group": "活跃小组", "auto_custom": "自定义活跃", "stop": "空闲", "cancel_friend_requests": "取消好友请求"}
                     new_status = status_map.get(data.get("status"))
                     if data.get("status") == "change_avatar":
                         new_status = "更换头像中"
                     if new_status and client_id:
                         self.root.after(0, lambda c=client_id, s=new_status: self.set_status(c, s))
+                    elif data.get("status") == "activity_error" and client_id:
+                        detail = str(data.get("error") or "执行失败")[:200]
+                        self.root.after(0, lambda c=client_id, e=detail: self.activity_error(c, e))
+
+                elif data.get("type") == "activity_detail" and client_id:
+                    detail = str(data.get("detail") or "")[:200]
+                    self.root.after(0, lambda c=client_id, d=detail: self.set_activity_detail(c, d))
 
                 elif data.get("type") == "avatar_result" and client_id:
                     detail = str(data.get("error", ""))[:200]
@@ -324,6 +338,27 @@ class App:
                 self.start_server(p),
                 self.loop
             )
+
+    def schedule_config_save(self, *_):
+        if self.config_timer:
+            self.root.after_cancel(self.config_timer)
+        self.config_timer = self.root.after(600, self.persist_configuration)
+
+    def persist_configuration(self):
+        self.config_timer = None
+        self.configuration["avatar_directory"] = self.avatar_directory.get().strip()
+        try:
+            save_configuration(self.configuration)
+            return True
+        except OSError as error:
+            messagebox.showerror("配置保存失败", f"无法写入软件目录下的 conf/config.json：\n{error}")
+            return False
+
+    def close_application(self):
+        if self.config_timer:
+            self.root.after_cancel(self.config_timer)
+        self.persist_configuration()
+        self.root.destroy()
 
     def choose_avatar_directory(self):
         directory = filedialog.askdirectory(parent=self.root, title="选择头像目录")
@@ -376,7 +411,19 @@ class App:
     async def send(self,port,client_id,data):
         ws = self.clients.get(client_id)
         if ws:
-            await ws.send(json.dumps(data))
+            try:
+                await ws.send(json.dumps(data))
+            except Exception as error:
+                self.root.after(0, lambda c=client_id, e=str(error): self.activity_error(c, e))
+
+    def activity_error(self, client_id, detail):
+        self.set_status(client_id, "执行失败")
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "detail", detail)
+
+    def set_activity_detail(self, client_id, detail):
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "detail", detail)
 
     def scroll(self):
         for client_id in self.selected_targets():
@@ -402,14 +449,30 @@ class App:
                     self.send(port,client_id,{"action":"auto_group"}),
                     self.loop
                 )
-    def stop_scroll(self):
+    def auto_custom(self):
         for client_id in self.selected_targets():
             port = self.ports.get(client_id)
             if port is not None:
                 asyncio.run_coroutine_threadsafe(
+                    self.send(port,client_id,{"action":"auto_custom"}),
+                    self.loop
+                )
+
+    def stop_scroll(self):
+        for client_id in self.selected_targets():
+            port = self.ports.get(client_id)
+            if port is not None:
+                self.set_status(client_id, "正在停止")
+                self.root.after(10000, lambda c=client_id: self.check_stop_confirmation(c))
+                asyncio.run_coroutine_threadsafe(
                     self.send(port,client_id,{"action":"stop_scroll"}),
                     self.loop
                 )
+
+    def check_stop_confirmation(self, client_id):
+        if self.list_view.exists(client_id) and self.list_view.set(client_id, "state") == "正在停止":
+            self.activity_error(client_id, "未收到停止确认，请检查浏览器连接后再次停止")
+
     def cancel_requets(self):
         for client_id in self.selected_targets():
             port = self.ports.get(client_id)
