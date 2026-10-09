@@ -44,7 +44,7 @@ class App:
         self.root.style.theme_use("flatly")
         style = ttk.Style(self.root)
         style.configure(".", font=("Microsoft YaHei UI", 10))
-        style.configure("Treeview", rowheight=48, font=("Microsoft YaHei UI", 10))
+        style.configure("Treeview", rowheight=40, font=("Microsoft YaHei UI", 10))
         style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
         style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
         style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
@@ -84,7 +84,7 @@ class App:
         frm = tb.Frame(self.root)
         frm.pack(fill="both", expand=True, padx=24, pady=20)
         header = tb.Frame(frm)
-        header.pack(fill="x", pady=(0, 20))
+        header.pack(fill="x", pady=(0, 12))
         if hasattr(self, "header_icon"):
             tb.Label(header, image=self.header_icon).pack(side="left", padx=(0, 10))
         tb.Label(header, text="BrowserAgent", style="Title.TLabel").pack(side="left")
@@ -93,24 +93,21 @@ class App:
         tb.Label(header, textvariable=self.account_summary, bootstyle="secondary").pack(side="right")
         tb.Separator(frm).pack(fill="x")
 
-        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(18, 10))
+        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(12, 10))
         btnf = tb.Frame(frm)
-        btnf.pack(fill="x", pady=(0, 18))
+        btnf.pack(fill="x", pady=(0, 12))
         for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group)):
             tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
         tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
         tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
 
-        tb.Label(frm, text="头像更换", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
         avatar_frame = tb.Frame(frm)
-        avatar_frame.pack(fill="x", pady=(0, 20))
+        avatar_frame.pack(fill="x", pady=(0, 12))
         tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
         self.avatar_directory = tk.StringVar()
         tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
         tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, bootstyle="secondary-outline", padding=(12, 8)).pack(side="left", padx=8)
-        tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(18, 8)).pack(side="left")
-        tb.Separator(frm).pack(fill="x")
-        tb.Label(frm, text="已连接账号", style="Section.TLabel").pack(anchor="w", pady=(18, 10))
+        tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
 
         frame = tb.Frame(frm)
         frame.pack(fill="both", expand=True, pady=5)
@@ -143,7 +140,7 @@ class App:
         self.list_view.pack(side="left", fill="both", expand=True)
         # Apply after ttkbootstrap has built its default table style.
         style = ttk.Style(self.root)
-        style.configure("Accounts.Treeview", rowheight=60, font=("Microsoft YaHei UI", 10))
+        style.configure("Accounts.Treeview", rowheight=40, font=("Microsoft YaHei UI", 10))
         style.configure("Accounts.Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
         self.list_view.configure(style="Accounts.Treeview")
 

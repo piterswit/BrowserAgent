@@ -16,7 +16,7 @@ def main():
         root.update()
         table_style = app.list_view.cget("style")
         assert table_style == "Accounts.Treeview"
-        assert int(root.style.lookup(table_style, "rowheight")) == 60
+        assert int(root.style.lookup(table_style, "rowheight")) == 40
         assert abs(root.winfo_x() - (root.winfo_screenwidth() - root.winfo_width()) // 2) < 5
         assert abs(root.winfo_y() - (root.winfo_screenheight() - root.winfo_height()) // 2) < 5
         assert app.header_icon.width() == 32
@@ -56,8 +56,8 @@ def main():
             check(root)
             assert app.list_view.winfo_height() > 100
             row_box = app.list_view.bbox("preview-1", "#0")
-            assert row_box and row_box[3] == 60
-            assert row_box[3] >= app.avatar_photos["preview-1"].height() + 16
+            assert row_box and row_box[3] == 48
+            assert row_box[3] >= app.avatar_photos["preview-1"].height() + 12
         assert app.list_view.set("preview-1", "state") == "头像已更新"
         assert app.list_view.set("preview-2", "state") == "待确认"
         assert app.selected_targets() == ["preview-1", "preview-2"]
