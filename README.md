@@ -1,5 +1,7 @@
 # BrowserAgent
 
+当前版本：**v0.8**。
+
 BrowserAgent 由 Windows 本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求和随机更换头像。
 
 ![插件图标](WS%20Browser%20Bridge/icon/bridge-128.png)
@@ -113,6 +115,10 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 换头像期间浏览器可能显示调试提示。不要在任务页打开开发者工具或取消调试，否则自动上传可能中断。
 
 ## 更新与打包
+
+推送 `v0.8` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件版本一致，否则构建中止。发布包为 `FB_Auto_Active_v0.8.zip`，包含 `FB_server.exe`、`Browser_Extension` 和 README；构建产物位于 CI 的 `release` 目录并上传到 GitHub Releases。用户的 `conf` 配置不会打包，首次运行时在程序目录下创建。
+
+v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、批量头像不重复分配，以及活跃停止和滚动翻页稳定性改进。
 
 修改源码后，在扩展管理页面点击“重新加载”，并重启本地软件。已有的 `dist/server.exe` 不会自动包含新的 Python 源码。
 

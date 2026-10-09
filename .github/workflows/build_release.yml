@@ -16,6 +16,7 @@ jobs:
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      RELEASE_TAG: ${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -30,54 +31,69 @@ jobs:
         shell: powershell
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Version and Run Tests
+        shell: powershell
+        run: |
+          python tools/check_release.py --tag "$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build EXE
         shell: powershell
         run: |
-          pyinstaller server.py `
+          python -m PyInstaller server.py `
             --onefile `
             --noconsole `
             --clean `
+            --noconfirm `
+            --specpath build `
+            --icon "WS Browser Bridge/icon/bridge.ico" `
+            --add-data "WS Browser Bridge/icon;WS Browser Bridge/icon" `
             --name "FB_server"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Create Release Folder
         shell: powershell
         run: |
-          $releaseFolder = "FB_Auto_Active_${{ github.ref_name }}"
-
-          if (Test-Path $releaseFolder) {
-            Remove-Item $releaseFolder -Recurse -Force
-          }
-
-          New-Item -ItemType Directory -Path $releaseFolder
-
-          Copy-Item ".\dist\FB_server.exe" "$releaseFolder\"
-
-          xcopy ".\WS Browser Bridge" "$releaseFolder\Browser_Extension\" /E /I /Y
+          $ErrorActionPreference = "Stop"
+          $releaseFolder = Join-Path "release" "FB_Auto_Active_$env:RELEASE_TAG"
+          New-Item -ItemType Directory -Path $releaseFolder -Force
+          Copy-Item -LiteralPath ".\dist\FB_server.exe" -Destination $releaseFolder
+          Copy-Item -LiteralPath ".\README.md" -Destination $releaseFolder
+          Copy-Item -LiteralPath ".\WS Browser Bridge" -Destination "$releaseFolder\Browser_Extension" -Recurse
 
       - name: Zip Release
         shell: powershell
         run: |
-          $zipFile = "FB_Auto_Active_${{ github.ref_name }}.zip"
-
-          if (Test-Path $zipFile) {
-            Remove-Item $zipFile -Force
-          }
-
+          $ErrorActionPreference = "Stop"
+          $zipFile = "release/FB_Auto_Active_$env:RELEASE_TAG.zip"
           Compress-Archive `
-            -Path "FB_Auto_Active_${{ github.ref_name }}" `
-            -DestinationPath $zipFile
+            -Path "release/FB_Auto_Active_$env:RELEASE_TAG" `
+            -DestinationPath $zipFile -Force
+          python tools/check_release.py --tag "$env:RELEASE_TAG" --exe "dist/FB_server.exe" --zip "$zipFile"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Generate Build Attestation
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: "FB_Auto_Active_${{ github.ref_name }}.zip"
+          subject-path: "release/FB_Auto_Active_${{ github.ref_name }}.zip"
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
           files: |
-            FB_Auto_Active_${{ github.ref_name }}.zip
+            release/FB_Auto_Active_${{ github.ref_name }}.zip

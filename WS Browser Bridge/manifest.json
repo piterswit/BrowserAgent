@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "118",
   "name": "FB Browser Bridge",
-  "version": "0.6",
+  "version": "0.8",
   "icons": {
     "16": "icon/bridge-16.png",
     "32": "icon/bridge-32.png",

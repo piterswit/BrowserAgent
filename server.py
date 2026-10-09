@@ -18,6 +18,7 @@ import websockets
 import traceback
 from config_store import load_configuration, save_configuration
 
+APP_VERSION = "0.8"
 PORT_RANGE = range(8765, 8770)
 
 # 防止系统进入睡眠
@@ -39,7 +40,7 @@ atexit.register(
 class App:
     def __init__(self, root: tb.Window):
         self.root = root
-        self.root.title("BrowserAgent · FB账号管理")
+        self.root.title(f"BrowserAgent v{APP_VERSION} · FB账号管理")
         self.root.geometry("1020x700")
         self.root.minsize(min(860, self.root.winfo_screenwidth() - 64), min(960, self.root.winfo_screenheight() - 100))
         self.root.style.theme_use("flatly")
