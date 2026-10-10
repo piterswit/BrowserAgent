@@ -16,6 +16,8 @@
     return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight;
   };
   const buttons = scope => [...scope.querySelectorAll('[role="button"], button')].filter(visible);
+  const closeChatWords = /^(Close chat|Close conversation|Close chat window|Close chat with .+|关闭聊天|关闭聊天窗口|关闭对话|关闭与.+的聊天|關閉聊天|關閉聊天室|關閉聊天視窗|關閉對話|關閉與.+的聊天室)$/i;
+  const chatScope = scope => buttons(scope).some(node => closeChatWords.test(text(node)));
   const unliked = node => labels.like.test(text(node)) &&
     !["aria-pressed", "aria-checked"].some(name => node.getAttribute(name) === "true") &&
     !/^(Liked|Unlike|Remove like|已赞|已讚|已点赞|已點讚|取消赞|取消讚|取消点赞|取消點讚|收回赞|收回讚)$/i.test((node.innerText || "").trim());
@@ -46,10 +48,81 @@
 
   window.__fbActivityInteractions = ctrl => {
     const counts = {like: 0, comment: 0, share: 0, join: 0};
-    const limits = {like: 2, comment: 1, share: 1, join: 1};
-    const seenNodes = new WeakSet();
     const reels = window.__fbActivityRequest?.mode === "reels";
-    let nextAttempt = Date.now() + random(45000, 75000);
+    const limits = {like: reels ? 2 : 3, comment: 2, share: 2, join: 1};
+    const seenNodes = new WeakSet();
+    let nextAttempt = Date.now() + random(30000, 50000);
+    const ownedOverlays = new Set();
+    const draft = node => (node.value || node.innerText || "").trim();
+    const editors = scope => [...scope.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')];
+    const closeWords = /^(Close|Close dialog|关闭|關閉)$/i;
+    let nextNotifications = Date.now() + random(45000, 90000), notificationVisits = 0;
+    function safeCleanup() {
+      if (!ctrl.run || document.hidden || Date.now() - ctrl.lastInput < 10000) return;
+      for (const scope of ownedOverlays) {
+        if (!visible(scope)) { ownedOverlays.delete(scope); continue; }
+        if (editors(scope).some(node => draft(node))) continue;
+        const close = findButton(scope, closeWords);
+        if (close) { close.click(); ownedOverlays.delete(scope); }
+        else if (scope.dispatchEvent) scope.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", code: "Escape", bubbles: true}));
+      }
+    }
+    function maintainPage() {
+      safeCleanup();
+      if (ctrl.mode !== "home" || !ctrl.run || document.hidden || Date.now() - ctrl.lastInput < 10000) return;
+      for (const button of buttons(document).filter(node => closeChatWords.test(text(node)))) {
+        let scope = button.closest('[role="dialog"], [role="complementary"]');
+        if (!scope) {
+          for (let parent = button.parentElement, depth = 0; parent && depth < 6; parent = parent.parentElement, depth++) {
+            const rect = parent.getBoundingClientRect();
+            if (rect.width >= 180 && rect.width < innerWidth * 0.5 && rect.left > innerWidth * 0.4 && rect.bottom >= innerHeight - 80) { scope = parent; break; }
+          }
+        }
+        if (!scope || !visible(scope)) continue;
+        if (editors(scope).some(node => draft(node))) { ctrl.report("暂停：聊天窗口有未发送草稿，请人工处理"); continue; }
+        button.click();
+      }
+    }
+    async function maybeNotifications() {
+      if (ctrl.mode !== "home" || notificationVisits >= 2 || Date.now() < nextNotifications || !ctrl.canAct()) return false;
+      nextNotifications = Date.now() + random(90000, 150000);
+      const notificationWords = /^(Notifications?|通知|通知消息|通知訊息)(?:[,，:：\s]+\d+.*)?$/i;
+      const trigger = [...document.querySelectorAll('[role="banner"] [role="button"], [role="banner"] button, header [role="button"], header button')]
+        .filter(visible).find(node => notificationWords.test(text(node)));
+      if (!trigger || trigger.getAttribute("aria-expanded") === "true") return false;
+      const previous = new Set(overlays());
+      const lastInput = ctrl.lastInput;
+      let panel;
+      try {
+        await click(trigger);
+        notificationVisits++;
+        panel = await waitFor(() => {
+          const controlled = document.getElementById?.(trigger.getAttribute("aria-controls"));
+          return controlled && visible(controlled) && !previous.has(controlled) ? controlled :
+            overlays().find(node => !previous.has(node) && (/^(Notifications?|通知)/i.test(text(node)) ||
+              [...node.querySelectorAll('[role="heading"], h1, h2')].some(heading => notificationWords.test(text(heading)))));
+        }, () => panel || overlays().find(node => !previous.has(node)) || null);
+        if (!panel) return true;
+        const scrolling = node => node.scrollHeight > node.clientHeight + 24 && /auto|scroll/.test(getComputedStyle(node).overflowY);
+        const target = [panel, ...panel.querySelectorAll("*")].find(node => visible(node) && scrolling(node));
+        const turns = Math.floor(random(2, 5));
+        for (let i = 0; i < turns; i++) {
+          await ctrl.sleep(random(1200, 2200));
+          check(panel);
+          if (!visible(panel)) break;
+          target?.scrollBy({top: (target.clientHeight || 300) * random(0.45, 0.8), behavior: "instant"});
+        }
+        return true;
+      } catch (error) { if (error.name === "AbortError") throw error; return false; }
+      finally {
+        if (ctrl.run && !document.hidden && ctrl.lastInput === lastInput &&
+            (trigger.getAttribute("aria-expanded") === "true" || panel && visible(panel))) {
+          trigger.click();
+          if (panel) ownedOverlays.add(panel);
+          safeCleanup();
+        }
+      }
+    }
     const check = (scope, editor) => {
       ctrl.guard();
       if (!ctrl.canAct(scope, editor, true)) throw Object.assign(new Error("Interaction paused"), {name: "InteractionPaused"});
@@ -72,8 +145,10 @@
     }
     // Only adopt a new overlay opened by our own click, never a pre-existing dialog.
     async function openedOverlay(previous) {
-      return waitFor(() => overlays().find(node => !previous.has(node)),
+      const scope = await waitFor(() => overlays().find(node => !previous.has(node)),
         () => overlays().find(node => !previous.has(node)) || null);
+      if (scope) ownedOverlays.add(scope);
+      return scope;
     }
     function candidates(kind) {
       const items = [];
@@ -89,6 +164,7 @@
         }
       } else {
         for (const scope of document.querySelectorAll('[role="article"]')) {
+          if (scope.closest?.('[role="dialog"], [role="menu"], [role="complementary"]')) continue;
           const button = findButton(scope, labels[kind]);
           if (!button || (kind === "like" && !unliked(button))) continue;
           const id = identity(scope, kind);
@@ -113,29 +189,63 @@
       await click(item.button, null, null, () => identity(item.scope, "comment") === item.key);
       let scope = item.scope;
       const editor = await waitFor(() => {
-        scope = overlays().find(node => !previous.has(node)) || item.scope;
+        scope = overlays().find(node => !previous.has(node) && !chatScope(node)) || item.scope;
+        if (scope !== item.scope) ownedOverlays.add(scope);
         return [...scope.querySelectorAll(selector)].find(visible);
       }, () => scope);
       if (!editor || (editor.value || editor.innerText || "").trim()) return;
-      check(scope);
-      editor.focus();
-      await ctrl.sleep(random(1500, 3000));
-      check(scope, editor);
       const value = comments[Math.floor(Math.random() * comments.length)];
-      if (typeof document.execCommand !== "function" || !document.execCommand("insertText", false, value)) return;
-      await ctrl.sleep(random(1500, 3000));
-      check(scope, editor);
-      if ((editor.value || editor.innerText || "").trim() !== value) return;
-      editor.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
-      editor.dispatchEvent(new KeyboardEvent("keyup", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
-      // A failed submission leaves its draft in place; never retry Enter blindly.
-      await ctrl.sleep(2000);
-      if (!(editor.value || editor.innerText || "").trim()) {
+      const lastInput = ctrl.lastInput;
+      if (scope !== item.scope) ownedOverlays.add(scope);
+      let inserted = false, submitted = false;
+      try {
+        check(scope);
+        editor.focus();
+        await ctrl.sleep(random(1500, 3000));
         check(scope, editor);
-        if (document.activeElement === editor) editor.blur();
-        if (scope !== item.scope) {
-          const close = findButton(scope, /^(Close|关闭|關閉)$/i);
-          if (close) await click(close, scope);
+        if (typeof document.execCommand !== "function" || !document.execCommand("insertText", false, value)) return false;
+        inserted = true;
+        await ctrl.sleep(random(1500, 3000));
+        check(scope, editor);
+        if (draft(editor) !== value) return false;
+        const sendWords = /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i;
+        let parent = editor.parentElement, send;
+        for (let depth = 0; parent && scope.contains(parent) && depth < 4; depth++, parent = parent.parentElement) {
+          send = findButton(parent, sendWords);
+          if (send || parent === scope) break;
+        }
+        if (send) await click(send, scope, editor, () => draft(editor) === value);
+        else {
+          editor.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
+          editor.dispatchEvent(new KeyboardEvent("keyup", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
+        }
+        for (let elapsed = 0; elapsed < 4000; elapsed += 300) {
+          await ctrl.sleep(300);
+          check(scope, editor);
+          if (!editor.isConnected || !draft(editor)) { submitted = true; break; }
+          if (draft(editor) !== value) break;
+        }
+        if (!submitted) ctrl.report("评论提交未确认：本次不重发，恢复浏览");
+        return submitted;
+      } finally {
+        // Never erase a user's edit, retry an uncertain submission, or act after Stop.
+        if (ctrl.run && !document.hidden && ctrl.lastInput === lastInput) {
+          if (inserted && !submitted && editor.isConnected && draft(editor) === value) {
+            if (editor.tagName === "TEXTAREA") {
+              const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(editor), "value")?.set;
+              if (setter) setter.call(editor, "");
+              else editor.value = "";
+              editor.dispatchEvent(new Event("input", {bubbles: true}));
+            } else if (document.createRange && window.getSelection && editor.isContentEditable) {
+              editor.focus();
+              const range = document.createRange(); range.selectNodeContents(editor);
+              const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+              document.execCommand("delete", false, null);
+              editor.dispatchEvent(new Event("input", {bubbles: true}));
+            }
+          }
+          if (!draft(editor) && document.activeElement === editor) editor.blur();
+          safeCleanup();
         }
       }
     }
@@ -162,7 +272,7 @@
       seenNodes.add(item.button);
       if (item.key) history.set(kind + ":" + item.key, Date.now());
       counts[kind]++;
-      if (kind === "comment") await comment(item);
+      if (kind === "comment") return await comment(item);
       else if (kind === "share") await share(item);
       else {
         if (kind === "like" && !unliked(item.button)) return false;
@@ -174,10 +284,10 @@
       return true;
     }
     return {
-      counts, limits,
+      counts, limits, maintainPage, maybeNotifications,
       async maybeInteract(allowed = ["like", "comment", "share", "join"]) {
         if (Date.now() < nextAttempt || !ctrl.canAct(null, null, true)) return false;
-        nextAttempt = Date.now() + random(90000, 150000);
+        nextAttempt = Date.now() + random(60000, 100000);
         const options = allowed.filter(kind => counts[kind] < limits[kind])
           .map(kind => ({kind, items: candidates(kind)})).filter(option => option.items.length);
         if (!options.length) return false;
@@ -185,6 +295,7 @@
         const item = choice.items[Math.floor(Math.random() * choice.items.length)];
         try { return await execute(choice.kind, item); }
         catch (error) { if (error.name === "AbortError") throw error; return false; }
+        finally { safeCleanup(); }
       }
     };
   };

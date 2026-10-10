@@ -34,7 +34,9 @@
       await ctrl.sleep(first ? 1200 : readingDelay());
       first = false;
       ctrl.guard();
+      interactions.maintainPage();
       if (!ctrl.canAct()) continue;
+      if (await interactions.maybeNotifications()) continue;
       try { await interactions.maybeInteract(); }
       catch (error) { if (error.name === "AbortError") throw error; }
       ctrl.guard();

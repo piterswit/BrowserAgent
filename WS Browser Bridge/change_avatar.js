@@ -16,7 +16,7 @@
     throw new Error(`未找到${description}，请检查 Facebook 页面语言或布局`);
   };
   const editWords = ["Edit profile picture", "Update profile picture", "编辑头像", "編輯大頭貼", "編輯頭像", "更新头像", "更新大頭貼", "更新頭像", "更换头像", "更換大頭貼", "更換頭像"];
-  const chooseWords = ["Choose profile picture", "Select profile picture", "选择头像", "選擇大頭貼", "選擇頭像", "选择个人头像", "選擇個人頭像"];
+  const chooseWords = ["Choose profile picture", "Select profile picture", "选择头像", "選擇大頭貼", "選擇大頭貼照", "選擇頭像", "选择个人头像", "選擇個人頭像"];
   const uploadWords = ["Upload photo", "Upload picture", "上传照片", "上传图片", "上傳相片", "上傳照片", "上傳圖片"];
   const saveWords = ["Save", "保存", "储存", "儲存"];
   let originalPictures = [];

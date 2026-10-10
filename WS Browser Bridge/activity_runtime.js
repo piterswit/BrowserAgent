@@ -1,5 +1,5 @@
 (() => {
-  const version = 3;
+  const version = 4;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -83,8 +83,11 @@
           const scrolling = node => node && node.scrollHeight > node.clientHeight + 24 &&
             /auto|scroll|overlay/.test(getComputedStyle(node).overflowY);
           if (typeof getComputedStyle !== "function") return window;
+          const main = document.querySelector('[role="main"], main');
+          const excluded = node => node?.closest?.('[role="dialog"], [role="menu"], [role="complementary"]');
           for (const x of [0.5, 0.7]) {
             let node = document.elementFromPoint(innerWidth * x, innerHeight * 0.6);
+            if (excluded(node) || main && !main.contains(node)) continue;
             while (node && node !== document.body && node !== document.documentElement) {
               if (scrolling(node)) return node;
               node = node.parentElement;
@@ -94,9 +97,8 @@
           if (root && root.scrollHeight > root.clientHeight + 24 &&
               !/hidden|clip/.test(getComputedStyle(root).overflowY) &&
               !/hidden|clip/.test(getComputedStyle(document.body).overflowY)) return window;
-          const main = document.querySelector('[role="main"]');
           if (scrolling(main)) return main;
-          for (const node of main?.querySelectorAll("*") || []) if (visible(node) && scrolling(node)) return node;
+          for (const node of main?.querySelectorAll("*") || []) if (!excluded(node) && visible(node) && scrolling(node)) return node;
           return window;
         },
         async scroll(element, amount, axis = "y", steps = 20) {

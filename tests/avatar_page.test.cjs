@@ -99,6 +99,7 @@ test("expired task cannot click Save", async () => {
 for (const labels of [
   {upload: "上传照片", save: "保存", edit: "编辑头像", picture: "Alice的头像", choose: "选择头像", see: "查看头像", success: "头像已更新", error: "上传失败"},
   {upload: "上傳相片", save: "儲存", edit: "編輯大頭貼", picture: "Alice的大頭貼", choose: "選擇大頭貼", see: "檢視大頭貼", success: "大頭貼已更新", error: "上傳失敗"},
+  {upload: "上傳相片", save: "儲存", edit: "選擇大頭貼照", picture: "Alice的大頭貼照", choose: "選擇大頭貼照", see: "檢視大頭貼照", success: "大頭貼照已更新", error: "上傳失敗"},
   {upload: "上傳照片", save: "儲存", edit: "編輯頭像", picture: "Alice的頭像", choose: "選擇頭像", see: "查看頭像", success: "頭像已儲存", error: "發生錯誤"}
 ]) {
   for (const menu of [false, true]) test(`${labels.edit}: ${menu ? "menu" : "direct"} upload and save`, async () => {
