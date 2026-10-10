@@ -68,16 +68,27 @@ async function main() {
       await page.evaluate(() => {
         const popup = document.createElement("div"); popup.id = "visible-popup"; popup.setAttribute("role", "dialog");
         popup.style = "position:fixed;top:100px;left:100px;width:300px;height:100px;background:white";
-        popup.textContent = "User dialog"; document.body.append(popup);
+        popup.innerHTML = '<button aria-label="Close">Dismiss</button>'; document.body.append(popup);
+        popup.querySelector("button").onclick = () => popup.remove();
+        if (!window.__fbActivityCtrl.canAct()) throw Error("Dismissed popup still blocked browsing");
+      });
+      assert.equal(await page.locator("#visible-popup").count(), 0);
+      const continued = await page.evaluate(() => window.scrollY);
+      await page.waitForFunction(start => window.scrollY > start, continued, {timeout: 10000});
+      await page.evaluate(() => {
+        const popup = document.createElement("div"); popup.id = "visible-popup"; popup.setAttribute("role", "dialog");
+        popup.style = "position:fixed;top:100px;left:100px;width:300px;height:100px;background:white";
+        popup.innerHTML = 'Confirm your identity <button aria-label="Close">Close</button>'; document.body.append(popup);
+        popup.querySelector("button").onclick = () => popup.remove();
         window.__fbActivityCtrl.canAct();
       });
-      assert.match(await page.evaluate(() => window.__fbActivityCtrl.detail), /可见弹窗/);
+      assert.match(await page.evaluate(() => window.__fbActivityCtrl.detail), /安全验证/);
       const stopped = await page.evaluate(() => window.scrollY);
       await page.waitForTimeout(1500); assert.equal(await page.evaluate(() => window.scrollY), stopped);
       await page.evaluate(() => document.getElementById("visible-popup").remove());
       await page.waitForFunction(start => window.scrollY > start, stopped, {timeout: 10000});
       await page.evaluate(() => window.__fbActivityRuntime.stop());
-      console.log("Window scrolling + visible-dialog pause/resume: passed");
+      console.log("Window scrolling + ordinary-popup auto-close + protected-dialog pause/resume: passed");
     } finally { await page.close(); }
   } finally { await browser.close(); }
 }

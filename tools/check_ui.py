@@ -1,6 +1,7 @@
 """Check the native control window at normal and minimum dimensions."""
 import sys
 import base64
+import ctypes
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,12 +11,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
 
 
+def contrast(first, second):
+    def luminance(color):
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        channels = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+        return sum(value * weight for value, weight in zip(channels, (0.2126, 0.7152, 0.0722)))
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def check_caption(root, theme):
+    window = ctypes.windll.user32.GetAncestor(root.winfo_id(), 2)
+    get_attribute = ctypes.windll.dwmapi.DwmGetWindowAttribute
+    get_attribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+    get_attribute.restype = ctypes.c_long
+    dark_caption = ctypes.c_int()
+    if get_attribute(window, 20, ctypes.byref(dark_caption), ctypes.sizeof(dark_caption)) == 0:
+        assert dark_caption.value == int(theme == "darkly")
+    caption = ctypes.c_uint()
+    if get_attribute(window, 35, ctypes.byref(caption), ctypes.sizeof(caption)) == 0:
+        assert caption.value == (0x00222222 if theme == "darkly" else 0xFFFFFFFF)
+
+
 def main():
     server.App.scan = lambda self: None
     root = server.tb.Window(themename="flatly")
     try:
-        app = server.App(root)
+        with patch.object(server, "system_theme_name", return_value="darkly"):
+            app = server.App(root)
         root.update()
+        check_caption(root, "darkly")
         table_style = app.list_view.cget("style")
         assert table_style == "Accounts.Treeview"
         assert int(root.style.lookup(table_style, "rowheight")) == 40
@@ -69,11 +94,38 @@ def main():
         assert app.list_view.set("preview-1", "state") == "头像已更新"
         assert app.list_view.set("preview-2", "state") == "待确认"
         assert app.selected_targets() == ["preview-1", "preview-2"]
+        for theme in ("darkly", "flatly", "darkly"):
+            with patch.object(server, "system_theme_name", return_value=theme):
+                app.apply_system_theme()
+            root.update()
+            assert root.style.theme_use() == theme
+            assert int(root.style.lookup("Accounts.Treeview", "rowheight")) == 40
+            assert app.list_view.selection() == ("preview-1", "preview-2")
+            assert app.list_view.set("preview-1", "state") == "头像已更新"
+            assert app.avatar_photos["preview-1"] is original_photo
+            assert str(app.account_menu.cget("background")) == root.style.colors.bg, (app.account_menu.cget("background"), root.style.colors.bg)
+            assert app.list_view.bbox("preview-1", "#0")[3] == 40
+            for button_style in ("Action.TButton", "Stop.TButton"):
+                assert contrast(root.style.lookup(button_style, "foreground"), root.style.lookup(button_style, "background")) >= 4.5
+            assert contrast(root.style.lookup("Muted.TLabel", "foreground"), root.style.colors.bg) >= 4.5
+            stack, action_buttons, muted_labels, styles = [root], 0, 0, []
+            while stack:
+                widget = stack.pop()
+                stack.extend(widget.winfo_children())
+                if isinstance(widget, (server.ttk.Button, server.ttk.Label)):
+                    styles.append((str(widget.cget("text")), str(widget.cget("style"))))
+                if isinstance(widget, server.ttk.Button) and str(widget.cget("style")) == "Action.TButton":
+                    action_buttons += 1
+                if isinstance(widget, server.ttk.Label) and str(widget.cget("style")) == "Muted.TLabel":
+                    muted_labels += 1
+            assert action_buttons == 5 and muted_labels == 2, styles
+            check_caption(root, theme)
+        assert app.theme_timer is not None
         app.remove_client("preview-1")
         root.update()
         assert not app.list_view.exists("preview-1")
         assert "preview-1" not in app.avatar_photos
-        print("GUI layout, centering, icons, avatar rendering and cleanup checks passed")
+        print("GUI layout, centering, icons, avatars, live light/dark themes and cleanup checks passed")
     finally:
         root.destroy()
 

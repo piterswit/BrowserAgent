@@ -17,6 +17,7 @@ from ttkbootstrap.constants import *
 import websockets
 import traceback
 from config_store import load_configuration, save_configuration
+from system_theme import system_theme_name
 
 APP_VERSION = "0.8"
 PORT_RANGE = range(8765, 8770)
@@ -43,13 +44,11 @@ class App:
         self.root.title(f"BrowserAgent v{APP_VERSION} · FB账号管理")
         self.root.geometry("1020x700")
         self.root.minsize(min(860, self.root.winfo_screenwidth() - 64), min(960, self.root.winfo_screenheight() - 100))
-        self.root.style.theme_use("flatly")
-        style = ttk.Style(self.root)
-        style.configure(".", font=("Microsoft YaHei UI", 10))
-        style.configure("Treeview", rowheight=40, font=("Microsoft YaHei UI", 10))
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
-        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
+        self.current_theme = None
+        self.theme_timer = None
+        self.themed_widgets = []
+        self.root.bind("<Map>", self.on_window_mapped, add="+")
+        self.apply_system_theme()
         icon_folder = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "WS Browser Bridge" / "icon"
         if (icon_folder / "bridge-128.png").exists():
             self.window_icon = tk.PhotoImage(file=str(icon_folder / "bridge-128.png"))
@@ -73,12 +72,95 @@ class App:
         self.config_timer = None
 
         self.build_ui()
+        self.apply_theme_styles()
         self.avatar_directory.trace_add("write", self.schedule_config_save)
         self.root.protocol("WM_DELETE_WINDOW", self.close_application)
         self.schedule_config_save()
         self.center_window()
+        self.apply_titlebar_theme()
         self.scan()
         self.root.after(3000, self.check_alive)
+        self.theme_timer = self.root.after(2000, self.watch_system_theme)
+
+    def apply_system_theme(self):
+        theme = system_theme_name()
+        if theme == self.current_theme:
+            return
+        self.root.style.theme_use(theme)
+        self.current_theme = theme
+        self.apply_theme_styles()
+        self.apply_titlebar_theme()
+
+    def on_window_mapped(self, event):
+        if event.widget is self.root:
+            self.apply_titlebar_theme()
+            self.root.after_idle(self.apply_titlebar_theme)
+
+    def apply_titlebar_theme(self):
+        try:
+            ancestor = ctypes.windll.user32.GetAncestor
+            ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            ancestor.restype = ctypes.c_void_p
+            window = ancestor(self.root.winfo_id(), 2)
+            if not window:
+                return
+            set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            set_attribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+            set_attribute.restype = ctypes.c_long
+            dark = ctypes.c_int(self.current_theme == "darkly")
+            for attribute in (20, 19):
+                if set_attribute(window, attribute, ctypes.byref(dark), ctypes.sizeof(dark)) == 0:
+                    break
+            # Windows 11 supports explicit caption colors; older versions ignore these.
+            caption = ctypes.c_uint(0x00222222 if dark.value else 0xFFFFFFFF)
+            text = ctypes.c_uint(0x00F4F4F4 if dark.value else 0xFFFFFFFF)
+            set_attribute(window, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+            set_attribute(window, 36, ctypes.byref(text), ctypes.sizeof(text))
+        except (OSError, AttributeError, tk.TclError):
+            pass
+
+    def apply_theme_styles(self):
+        style = ttk.Style(self.root)
+        dark = self.current_theme == "darkly"
+        style.configure(".", font=("Microsoft YaHei UI", 10))
+        for name in ("Treeview", "Accounts.Treeview"):
+            style.configure(name, rowheight=40, font=("Microsoft YaHei UI", 10))
+            style.configure(name + ".Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
+        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("Muted.TLabel", foreground="#c4cbd3" if dark else "#596674")
+        for name, background, foreground, border, hover in (
+            ("Action.TButton", "#343b42" if dark else "#f0f4f7", "#f2f4f6" if dark else "#26333f",
+             "#677682" if dark else "#87939e", "#46545f" if dark else "#e4edf3"),
+            ("Stop.TButton", "#4b353a" if dark else "#fff1f2", "#ffb7bf" if dark else "#9b2c37",
+             "#aa6872", "#674049" if dark else "#ffe1e5"),
+        ):
+            style.configure(name, background=background, foreground=foreground, bordercolor=border,
+                            lightcolor=background, darkcolor=background, borderwidth=1)
+            style.map(name, foreground=[("disabled", "#929aa3" if dark else "#6f7882"), ("!disabled", foreground)],
+                      background=[("disabled", background), ("pressed", hover), ("active", hover), ("!disabled", background)],
+                      bordercolor=[("focus", foreground), ("active", border), ("!disabled", border)],
+                      lightcolor=[("active", hover)], darkcolor=[("active", hover)])
+        for widget, name in self.themed_widgets:
+            # Bypass ttkbootstrap's bootstyle name normalization for local styles.
+            widget.tk.call(str(widget), "configure", "-style", name)
+        if hasattr(self, "list_view"):
+            self.list_view.tag_configure("success", foreground="#65d6bc" if dark else "#157f78")
+            self.list_view.tag_configure("error", foreground="#ff929a" if dark else "#b33e46")
+            colors = self.root.style.colors
+            self.account_menu.configure(background=colors.bg, foreground=colors.fg,
+                                        activebackground=colors.selectbg, activeforeground=colors.selectfg)
+
+    def themed_widget(self, widget, name):
+        self.themed_widgets.append((widget, name))
+        return widget
+
+    def watch_system_theme(self):
+        self.theme_timer = None
+        try:
+            self.apply_system_theme()
+        finally:
+            self.theme_timer = self.root.after(2000, self.watch_system_theme)
 
     def center_window(self):
         self.root.update_idletasks()
@@ -94,10 +176,10 @@ class App:
         header.pack(fill="x", pady=(0, 12))
         if hasattr(self, "header_icon"):
             tb.Label(header, image=self.header_icon).pack(side="left", padx=(0, 10))
-        tb.Label(header, text="BrowserAgent", style="Title.TLabel").pack(side="left")
-        tb.Label(header, text="FB账号管理", bootstyle="secondary").pack(side="left", padx=16, pady=(8, 0))
+        self.themed_widget(tb.Label(header, text="BrowserAgent"), "Title.TLabel").pack(side="left")
+        self.themed_widget(tb.Label(header, text="FB账号管理"), "Muted.TLabel").pack(side="left", padx=16, pady=(8, 0))
         self.account_summary = tk.StringVar(value="已连接 0  ·  已选中 0")
-        tb.Label(header, textvariable=self.account_summary, bootstyle="secondary").pack(side="right")
+        self.themed_widget(tb.Label(header, textvariable=self.account_summary), "Muted.TLabel").pack(side="right")
         tb.Separator(frm).pack(fill="x")
 
         avatar_frame = tb.Frame(frm)
@@ -106,15 +188,15 @@ class App:
         directory = self.configuration.get("avatar_directory", "")
         self.avatar_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
         tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
-        tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, bootstyle="secondary-outline", padding=(12, 8)).pack(side="left", padx=8)
+        self.themed_widget(tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, padding=(12, 8)), "Action.TButton").pack(side="left", padx=8)
         tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
 
-        tb.Label(frm, text="账号操作", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
+        self.themed_widget(tb.Label(frm, text="账号操作"), "Section.TLabel").pack(anchor="w", pady=(0, 10))
         btnf = tb.Frame(frm)
         btnf.pack(fill="x", pady=(0, 12))
         for text, command in (("首页活跃", self.scroll), ("Reels活跃", self.auto_reels), ("小组活跃", self.auto_group), ("自定义活跃", self.auto_custom)):
-            tb.Button(btnf, text=text, command=command, bootstyle="secondary-outline", padding=(14, 8)).pack(side="left", padx=(0, 8))
-        tb.Button(btnf, text="停止活跃", command=self.stop_scroll, bootstyle="secondary", padding=(14, 8)).pack(side="left", padx=(0, 8))
+            self.themed_widget(tb.Button(btnf, text=text, command=command, padding=(14, 8)), "Action.TButton").pack(side="left", padx=(0, 8))
+        self.themed_widget(tb.Button(btnf, text="停止活跃", command=self.stop_scroll, padding=(14, 8)), "Stop.TButton").pack(side="left", padx=(0, 8))
         tb.Button(btnf, text="取消好友请求", command=self.cancel_requets, bootstyle="danger-outline", padding=(14, 8)).pack(side="right")
 
         frame = tb.Frame(frm)
@@ -322,9 +404,13 @@ class App:
                         new_status = "更换头像中"
                     if new_status and client_id:
                         self.root.after(0, lambda c=client_id, s=new_status: self.set_status(c, s))
+                        if data.get("status") == "stop" and isinstance(data.get("stats"), dict):
+                            self.root.after(0, lambda c=client_id, stats=data["stats"]: self.show_activity_stats(c, stats))
                     elif data.get("status") == "activity_error" and client_id:
                         detail = str(data.get("error") or "执行失败")[:200]
                         self.root.after(0, lambda c=client_id, e=detail: self.activity_error(c, e))
+                        if isinstance(data.get("stats"), dict):
+                            self.root.after(0, lambda c=client_id, stats=data["stats"], e=detail: self.show_activity_stats(c, stats, e))
 
                 elif data.get("type") == "activity_detail" and client_id:
                     detail = str(data.get("detail") or "")[:200]
@@ -391,6 +477,9 @@ class App:
             return False
 
     def close_application(self):
+        if self.theme_timer:
+            self.root.after_cancel(self.theme_timer)
+            self.theme_timer = None
         if self.config_timer:
             self.root.after_cancel(self.config_timer)
         self.persist_configuration()
@@ -475,6 +564,29 @@ class App:
         if self.list_view.exists(client_id):
             self.list_view.set(client_id, "detail", detail)
 
+    def show_activity_stats(self, client_id, stats, prefix=""):
+        def count(group, kind):
+            values = stats.get(group)
+            value = values.get(kind, 0) if isinstance(values, dict) else 0
+            return min(value, 100000) if type(value) is int and value >= 0 else 0
+        results, uncertain = [], []
+        for kind, label in (("like", "点赞"), ("comment", "评论"), ("share", "分享")):
+            attempted = count("attempted", kind)
+            confirmed = min(count("confirmed", kind), attempted)
+            results.append(f"{label} {confirmed} 次")
+            if attempted > confirmed:
+                uncertain.append(f"{label} {attempted - confirmed} 次")
+        detail = "；".join(results)
+        if uncertain:
+            detail += "（未确认：" + "、".join(uncertain) + "）"
+        if not any(count("attempted", kind) for kind in ("like", "comment", "share")):
+            issue = stats.get("issue")
+            if isinstance(issue, str) and issue:
+                detail += "；原因：" + issue[:160]
+        if prefix:
+            detail = prefix + "；" + detail
+        self.set_activity_detail(client_id, detail)
+
     def scroll(self):
         for client_id in self.selected_targets():
             port = self.ports.get(client_id)
@@ -550,7 +662,7 @@ class App:
 
 def main():
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
-    root = tb.Window(themename="flatly")
+    root = tb.Window(themename=system_theme_name())
     App(root)
     root.mainloop()
 

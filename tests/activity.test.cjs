@@ -36,7 +36,7 @@ function page(mode = "home") {
   const document = {hidden: false, activeElement: null, querySelector: () => null, querySelectorAll: () => [], elementFromPoint: () => null};
   const context = vm.createContext({...clock, window, document, location: {pathname: "/"},
     innerWidth: 1000, innerHeight: 700, URL, chrome: {runtime: {sendMessage: async msg => {
-      if (msg.cmd !== "fb_bridge_activity_detail") messages.push(msg);
+      if (!["fb_bridge_activity_detail", "fb_bridge_activity_stats"].includes(msg.cmd)) messages.push(msg);
     }}}});
   vm.runInContext(source("activity_runtime.js"), context);
   vm.runInContext(source("activity_interactions.js"), context);
@@ -101,6 +101,90 @@ test("a visible unrelated dialog pauses browsing and reports its reason", async 
   p.inject(); await p.clock.advance(4000);
   assert.equal(p.moves.length, 0);
   assert.match(p.window.__fbActivityCtrl.detail, /可见弹窗/);
+});
+
+function popupFixture(p, {label = "Close", text = "Optional notice", fields = [], stays = false, role = "dialog"} = {}) {
+  let clicks = 0;
+  const popup = {
+    isConnected: true, innerText: text,
+    getAttribute: name => name === "role" ? role : null,
+    getBoundingClientRect: () => ({width: 300, height: 150, top: 100, bottom: 250}),
+    contains: node => fields.includes(node),
+    querySelectorAll: selector => selector.includes("input") ? fields : label ? [close] : []
+  };
+  const close = {
+    isConnected: true, innerText: label, getAttribute: () => null,
+    getBoundingClientRect: () => ({width: 30, height: 30, top: 100, bottom: 130}),
+    closest: () => popup,
+    click() { clicks++; if (!stays) popup.isConnected = false; }
+  };
+  p.document.querySelectorAll = selector => selector.includes('role="dialog"') ? [popup] : [];
+  return {popup, close, clicks: () => clicks};
+}
+
+for (const mode of ["home", "group", "custom", "reels"]) {
+  for (const label of ["Close", "关闭", "關閉", "Not now", "取消"]) {
+    test(`${mode}: ${label} dismisses a generic popup and continues browsing`, async () => {
+      const p = page(mode), fixture = popupFixture(p, {label});
+      p.inject(); await p.clock.advance(10000);
+      assert.equal(fixture.clicks(), 1);
+      assert.ok(p.moves.length);
+      assert.notEqual(p.window.__fbActivityCtrl.state, "暂停");
+      p.window.__fbActivityRuntime.stop();
+    });
+  }
+}
+
+test("failed popup close retries are bounded and do not click every scroll frame", async () => {
+  const p = page(), fixture = popupFixture(p, {stays: true}); p.inject();
+  const ctrl = p.window.__fbActivityCtrl;
+  for (let i = 0; i < 20; i++) ctrl.canAct();
+  assert.equal(fixture.clicks(), 1);
+  assert.equal(ctrl.state, "运行中");
+  await p.clock.advance(60000);
+  assert.equal(fixture.clicks(), 3);
+  assert.match(ctrl.detail, /自动关闭失败/);
+  assert.equal(p.moves.length, 0);
+  ctrl.stop();
+});
+
+test("Escape can dismiss an unlabeled generic popup without selecting its actions", () => {
+  const p = page(), fixture = popupFixture(p, {label: null});
+  p.context.KeyboardEvent = class { constructor(type, options) { this.type = type; Object.assign(this, options); } };
+  const keys = [];
+  fixture.popup.dispatchEvent = event => { keys.push(event.key); fixture.popup.isConnected = false; };
+  p.inject();
+  assert.deepEqual(keys, ["Escape", "Escape"]);
+  assert.equal(fixture.clicks(), 0);
+  assert.equal(p.window.__fbActivityCtrl.canAct(), true);
+  p.window.__fbActivityRuntime.stop();
+});
+
+for (const config of [{text: "Confirm your identity"}, {text: "登录验证"}, {fields: [{type: "password", value: ""}]},
+  {fields: [{value: "My unfinished comment"}]}, {fields: [{type: "file", files: [{}]}]}]) {
+  test(`protected popup ${JSON.stringify(config)} is not dismissed`, () => {
+    const p = page(), fixture = popupFixture(p, config); p.inject();
+    assert.equal(fixture.clicks(), 0);
+    assert.equal(p.window.__fbActivityCtrl.canAct(), false);
+    assert.match(p.window.__fbActivityCtrl.detail, /人工处理/);
+    p.window.__fbActivityRuntime.stop();
+  });
+}
+
+test("an active interaction scope is not closed by generic recovery", () => {
+  const p = page(); p.inject();
+  const fixture = popupFixture(p);
+  assert.equal(p.window.__fbActivityCtrl.canAct(fixture.popup), true);
+  assert.equal(fixture.clicks(), 0);
+  p.window.__fbActivityRuntime.stop();
+});
+
+test("recent user input, hidden tabs and Stop prevent automatic popup dismissal", () => {
+  const p = page(); p.inject(); const fixture = popupFixture(p), ctrl = p.window.__fbActivityCtrl;
+  p.document.hidden = true; assert.equal(ctrl.canAct(), false);
+  p.document.hidden = false; ctrl.lastInput = 20000; assert.equal(ctrl.canAct(), false);
+  ctrl.lastInput = 0; ctrl.stop(); assert.equal(ctrl.canAct(), false);
+  assert.equal(fixture.clicks(), 0);
 });
 test("a stale runtime is upgraded rather than silently reusing its broken guards", async () => {
   const p = page(); let stopped = 0;
@@ -341,6 +425,49 @@ test("an old session completion cannot overwrite a newer session status", async 
   await vm.runInContext("startActivity('home')", b.context);
   b.runtimeMessages[0]({cmd: "fb_bridge_active_stopped", runId: "old"}, {tab: {id: 1}});
   assert.equal(b.messages.at(-1).status, "auto_main_page");
+});
+
+test("natural completion forwards final stats only from the active task tab", async () => {
+  const b = background(); await flush();
+  vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  await vm.runInContext("startActivity('home')", b.context);
+  const run = vm.runInContext("activeRun", b.context);
+  const stats = {attempted: {like: 2, comment: 1, share: 1}, confirmed: {like: 1, comment: 1, share: 0}};
+  b.runtimeMessages[0]({cmd: "fb_bridge_active_stopped", runId: run.runId, stats}, {tab: {id: 999}});
+  assert.equal(b.messages.at(-1).status, "auto_main_page");
+  b.runtimeMessages[0]({cmd: "fb_bridge_active_stopped", runId: run.runId, stats}, {tab: {id: 1}});
+  assert.equal(b.messages.at(-1).status, "stop");
+  assert.deepEqual(b.messages.at(-1).stats, stats);
+});
+
+test("manual stop uses final page snapshot and never reloads a modern controller", async () => {
+  const b = background(); await flush();
+  vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  await vm.runInContext("startActivity('home')", b.context);
+  const run = vm.runInContext("activeRun", b.context);
+  const stats = {attempted: {like: 2, comment: 0, share: 0}, confirmed: {like: 2, comment: 0, share: 0}};
+  b.chrome.tabs.reload = () => { throw Error("must not reload snapshot result"); };
+  b.chrome.scripting.executeScript = async () => [{result: {runId: run.runId, stats}}];
+  await vm.runInContext("stopActivity()", b.context);
+  assert.deepEqual(b.messages.at(-1).stats, stats);
+});
+
+test("Reels reinjection carries session totals and checkpoints reject other tabs", async () => {
+  const b = background(); await flush();
+  vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.tabs[0].url = "https://www.facebook.com/reel/123";
+  await vm.runInContext("startActivity('reels')", b.context);
+  const run = vm.runInContext("activeRun", b.context);
+  const stats = {attempted: {like: 1, comment: 0, share: 0}, confirmed: {like: 1, comment: 0, share: 0}};
+  b.runtimeMessages[0]({cmd: "fb_bridge_activity_stats", runId: run.runId, stats}, {tab: {id: 999}});
+  assert.equal(run.stats.attempted.like, 0);
+  b.runtimeMessages[0]({cmd: "fb_bridge_activity_stats", runId: run.runId, stats}, {tab: {id: 1}});
+  await vm.runInContext("injectActivity(activeRun.tabId, activeRun.mode, activeRun.runId, activeRun.epoch)", b.context);
+  const request = b.injected.filter(item => item.args?.[1]?.runId).at(-1).args[1];
+  assert.equal(request.stats.confirmed.like, 1);
 });
 test("stop covers inactive Facebook pages and skips unrelated sites", async () => {
   const b = background(); await flush();

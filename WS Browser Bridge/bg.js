@@ -451,9 +451,22 @@ const nextEpoch = () => {
   return activityEpoch;
 };
 
+function normalizeActivityStats(stats) {
+  const result = {attempted: {}, confirmed: {}};
+  for (const kind of ["like", "comment", "share"]) {
+    const attempted = stats?.attempted?.[kind];
+    const confirmed = stats?.confirmed?.[kind];
+    result.attempted[kind] = Number.isSafeInteger(attempted) && attempted >= 0 ? Math.min(attempted, 100000) : 0;
+    result.confirmed[kind] = Number.isSafeInteger(confirmed) && confirmed >= 0 ? Math.min(confirmed, result.attempted[kind]) : 0;
+  }
+  if (typeof stats?.issue === "string" && stats.issue) result.issue = stats.issue.slice(0, 160);
+  return result;
+}
+
 async function stopTabs(epoch) {
   const tabs = await chrome.tabs.query({});
   const failures = [];
+  const snapshots = [];
   await Promise.all(tabs.filter(tab => isFacebook(tab.url) && !taskTabs.has(tab.id)).map(async tab => {
     try {
       const results = await chrome.scripting.executeScript({
@@ -462,8 +475,10 @@ async function stopTabs(epoch) {
           window.__fbActivityEpoch = Math.max(window.__fbActivityEpoch || 0, token);
           window.__fbActivityRequest = null;
           if (window.__fbActivityRuntime) {
+            const ctrl = window.__fbActivityCtrl;
+            const snapshot = ctrl ? {runId: ctrl.runId, stats: ctrl.snapshotStats?.()} : window.__fbActivityLastSnapshot;
             window.__fbActivityRuntime.stop();
-            return false;
+            return snapshot;
           }
           // Old injected scripts have untracked timers; reload once to remove them.
           const legacy = !!(window.__hsCtrl || window.__reelCtrl);
@@ -477,7 +492,9 @@ async function stopTabs(epoch) {
         },
         args: [epoch]
       });
-      if (results[0]?.result) await chrome.tabs.reload(tab.id);
+      const snapshot = results[0]?.result;
+      if (snapshot === true) await chrome.tabs.reload(tab.id);
+      else if (snapshot?.runId) snapshots.push(snapshot);
     } catch (error) {
       // A closed/navigated tab cannot keep its old page script running.
       const current = await chrome.tabs.get(tab.id).catch(() => null);
@@ -485,16 +502,19 @@ async function stopTabs(epoch) {
     }
   }));
   if (failures.length) throw new Error(failures.join("; "));
+  return snapshots;
 }
 async function stopActivity() {
   const epoch = nextEpoch();
+  const run = activeRun;
   activeRun = null;
   autoSuppressed = true;
   await suppressionReady;
   autoSuppressed = true;
   await chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
-  await stopTabs(epoch);
-  if (activityEpoch === epoch) safeSend({type: "status", status: "stop"});
+  const snapshots = await stopTabs(epoch);
+  const stats = run ? normalizeActivityStats(snapshots.find(snapshot => snapshot.runId === run.runId)?.stats || run.stats) : null;
+  if (activityEpoch === epoch) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
 }
 
 async function navigateActivity(tabId, url, epoch) {
@@ -556,7 +576,7 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
   }
   if (activityEpoch !== epoch) return;
   const runId = crypto.randomUUID();
-  activeRun = {runId, tabId: tab.id, epoch, mode};
+  activeRun = {runId, tabId: tab.id, epoch, mode, stats: normalizeActivityStats(null)};
   try { await injectActivity(tab.id, mode, runId, epoch); }
   catch (error) {
     if (activityEpoch === epoch) activeRun = null;
@@ -574,7 +594,7 @@ async function injectActivity(tabId, mode, runId, epoch) {
       window.__fbActivityRequest = request;
       window.__fbActivityLastError = null;
     },
-    args: [epoch, {runId, mode}]
+    args: [epoch, {runId, mode, stats: activeRun?.runId === runId ? activeRun.stats : normalizeActivityStats(null)}]
   });
   if (activityEpoch !== epoch) return;
   await chrome.scripting.executeScript({
@@ -736,12 +756,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     else connect();
   } else if (msg.cmd === "fb_bridge_active_stopped") {
     if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) {
+      const stats = normalizeActivityStats(msg.stats || activeRun.stats);
       activeRun = null;
       autoSuppressed = true;
       chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
-      if (msg.error) reportError(new Error(msg.error));
-      else safeSend({type: "status", status: "stop"});
+      if (msg.error) safeSend({type: "status", status: "activity_error", error: msg.error, stats});
+      else safeSend({type: "status", status: "stop", stats});
     }
+  } else if (msg.cmd === "fb_bridge_activity_stats") {
+    if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) activeRun.stats = normalizeActivityStats(msg.stats);
   } else if (msg.cmd === "fb_bridge_activity_detail") {
     if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) {
       if (msg.error) reportError(new Error(msg.detail));

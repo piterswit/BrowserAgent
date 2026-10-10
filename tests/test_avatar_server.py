@@ -124,6 +124,41 @@ class AvatarServerTest(unittest.TestCase):
         asyncio.run(self.app.ws_handler(Socket(), 8765))
         self.assertEqual(details, [("a", "暂停：页面存在可见弹窗或菜单")])
 
+    def test_final_activity_counts_keep_unconfirmed_actions_separate(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append((cid, detail))
+        self.app.show_activity_stats("a", {"attempted": {"like": 3, "comment": 2, "share": 1},
+                                           "confirmed": {"like": 2, "comment": 1, "share": 0}})
+        self.assertEqual(details, [("a", "点赞 2 次；评论 1 次；分享 0 次（未确认：点赞 1 次、评论 1 次、分享 1 次）")])
+
+    def test_activity_counts_reject_invalid_values(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {"attempted": {"like": True, "comment": -2, "share": "2"},
+                                           "confirmed": {"like": 999, "comment": 5, "share": 2}}, "已停止")
+        self.assertEqual(details, ["已停止；点赞 0 次；评论 0 次；分享 0 次"])
+
+    def test_zero_interaction_result_includes_skip_reason(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {"issue": "未识别到帖子容器，页面布局可能不兼容"})
+        self.assertEqual(details, ["点赞 0 次；评论 0 次；分享 0 次；原因：未识别到帖子容器，页面布局可能不兼容"])
+
+    def test_stop_message_displays_counts_after_setting_idle(self):
+        events = []
+        self.app.register_client_ui = lambda *args: None
+        self.app.set_status = lambda cid, status: events.append(status)
+        self.app.set_activity_detail = lambda cid, detail: events.append(detail)
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "a"})
+            yield json.dumps({"type": "status", "status": "stop", "stats": {
+                "attempted": {"like": 1}, "confirmed": {"like": 1}}})
+        class Socket:
+            def __aiter__(self):
+                return messages()
+        asyncio.run(self.app.ws_handler(Socket(), 8765))
+        self.assertEqual(events, ["空闲", "点赞 1 次；评论 0 次；分享 0 次"])
+
     def test_stop_is_pending_until_browser_acknowledges(self):
         sent = []
         callbacks = []

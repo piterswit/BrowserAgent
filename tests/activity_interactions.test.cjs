@@ -22,7 +22,7 @@ function setup(kind) {
       now = until; await flush();
     }
   };
-  const document = {hidden: false, activeElement: null, articles: [], overlays: []};
+  const document = {hidden: false, activeElement: null, articles: [], overlays: [], alerts: []};
   class Node {
     constructor(type, label = "") { this.type = type; this.innerText = label; this.attributes = {}; this.children = []; this.isConnected = true; }
     add(node) { this.children.push(node); node.parentElement = this; return node; }
@@ -38,6 +38,10 @@ function setup(kind) {
     querySelectorAll(selector) {
       const all = this.children.flatMap(child => [child, ...child.descendants()]);
       if (selector === 'a[href]') return all.filter(child => child.type === "anchor");
+      if (selector.startsWith('[data-ad-rendering-role="')) return all.filter(child =>
+        child.attributes["data-ad-rendering-role"] === selector.match(/="([^"]+)"/)[1]);
+      if (selector === '[id="focused-state-composer-submit"]') return all.filter(child =>
+        child.attributes.id === "focused-state-composer-submit");
       if (selector === "*") return all;
       if (selector.includes('role="heading"')) return all.filter(child => child.type === "heading");
       if (selector.includes("textbox")) return all.filter(child => child.type === "editor");
@@ -47,6 +51,7 @@ function setup(kind) {
   }
   document.querySelectorAll = selector => {
     if (selector === '[role="article"]') return document.articles;
+    if (selector.includes('role="alert"')) return document.alerts;
     if (selector.includes('role="dialog"')) return document.overlays;
     return document.articles.flatMap(article => article.querySelectorAll(selector));
   };
@@ -131,6 +136,8 @@ for (const label of ["Post comment", "发表评论", "發佈留言"]) {
     assert.deepEqual(p.clicks, ["Comment", label]);
     assert.equal(p.keys.length, 0);
     assert.equal(p.ctrl.canAct(), true);
+    assert.equal(p.ctrl.stats.attempted.comment, 1);
+    assert.equal(p.ctrl.stats.confirmed.comment, 1);
   });
 }
 
@@ -143,6 +150,224 @@ test("ignored Enter clears only the automation draft and resumes browsing withou
   assert.equal(editor.innerText, "");
   assert.deepEqual(p.keys.filter(type => type === "keydown"), ["keydown"]);
   assert.equal(p.ctrl.canAct(), true);
+  assert.equal(p.ctrl.stats.attempted.comment, 1);
+  assert.equal(p.ctrl.stats.confirmed.comment, 0);
+});
+
+test("like telemetry separates confirmed state changes from uncertain clicks", async () => {
+  for (const confirmed of [false, true]) {
+    const p = setup("like");
+    if (confirmed) p.button.onclick = () => { p.button.attributes["aria-pressed"] = "true"; };
+    const {promise} = await p.start(); await p.clock.advance(4000); await promise;
+    assert.equal(p.ctrl.stats.attempted.like, 1);
+    assert.equal(p.ctrl.stats.confirmed.like, Number(confirmed));
+  }
+});
+
+test("a delayed like state is confirmed without a second click", async () => {
+  const p = setup("like");
+  p.button.onclick = () => p.clock.setTimeout(() => { p.button.innerText = "Unlike"; }, 2400);
+  const {promise} = await p.start(); await p.clock.advance(4000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.confirmed.like, 1);
+  assert.deepEqual(p.clicks, ["Like"]);
+});
+
+test("a replaced like button on the same post can confirm the click", async () => {
+  const p = setup("like");
+  p.button.onclick = () => {
+    p.button.isConnected = false;
+    p.article.add(new p.Node("button", "已讚"));
+  };
+  const {promise} = await p.start(); await p.clock.advance(4000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.confirmed.like, 1);
+  assert.deepEqual(p.clicks, ["Like"]);
+});
+
+test("a replaced post is followed only by its stable identity", async () => {
+  for (const samePost of [false, true]) {
+    const p = setup("like");
+    p.button.onclick = () => {
+      p.article.isConnected = false; p.button.isConnected = false;
+      const replacement = new p.Node("article");
+      const anchor = replacement.add(new p.Node("anchor"));
+      anchor.href = samePost ? p.anchor.href : "https://www.facebook.com/alice/posts/456";
+      replacement.add(new p.Node("button", "Liked"));
+      p.document.articles = [replacement];
+    };
+    const {promise} = await p.start(); await p.clock.advance(4000);
+    assert.equal(await promise, true);
+    assert.equal(p.ctrl.stats.confirmed.like, Number(samePost));
+    assert.equal(p.clicks.length, 1);
+  }
+});
+
+test("ambiguous replacement actions do not confirm a like", async () => {
+  const p = setup("like");
+  p.button.onclick = () => {
+    p.button.isConnected = false;
+    p.article.add(new p.Node("button", "Liked"));
+    p.article.add(new p.Node("button", "Like"));
+  };
+  const {promise} = await p.start(); await p.clock.advance(4000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.confirmed.like, 0);
+  assert.equal(p.clicks.length, 1);
+});
+
+test("Stop cancels delayed like confirmation", async () => {
+  const p = setup("like");
+  const {promise} = await p.start();
+  const outcome = promise.catch(error => error);
+  await p.clock.advance(1000); p.ctrl.stop();
+  p.button.innerText = "Liked";
+  await p.clock.advance(4000);
+  assert.equal((await outcome).name, "AbortError");
+  assert.equal(p.ctrl.stats.confirmed.like, 0);
+  assert.equal(p.jobs.size, 0);
+});
+
+test("an empty target scan retries soon instead of consuming the action cooldown", async () => {
+  const p = setup("like");
+  p.button.isConnected = false;
+  await p.clock.advance(30000);
+  assert.equal(await p.interactions.maybeInteract(["like"]), false);
+  assert.match(p.ctrl.stats.issue, /互动按钮/);
+  p.button.isConnected = true;
+  await p.clock.advance(5000);
+  const attempt = p.interactions.maybeInteract(["like"]);
+  await p.clock.advance(4000);
+  assert.equal(await attempt, true);
+  assert.equal(p.ctrl.stats.attempted.like, 1);
+  assert.equal(p.ctrl.stats.issue, "");
+});
+
+test("visible text matches even when aria describes the action differently", async () => {
+  const p = setup("like");
+  p.button.attributes["aria-label"] = "React to this post";
+  p.button.innerText = "按讚";
+  const {promise} = await p.start(); await p.clock.advance(4000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.attempted.like, 1);
+});
+
+test("aria Unlike vetoes Like text and never removes an existing like", async () => {
+  const p = setup("like");
+  p.button.attributes["aria-label"] = "Unlike";
+  const {promise} = await p.start();
+  assert.equal(await promise, false);
+  assert.equal(p.clicks.length, 0);
+});
+
+test("icon-only like markers require an explicit unliked state on the clickable wrapper", async () => {
+  for (const state of [null, "false", "true"]) {
+    const p = setup("like");
+    p.button.innerText = "4";
+    const icon = p.button.add(new p.Node("marker"));
+    icon.attributes["data-ad-rendering-role"] = "like_button";
+    if (state !== null) p.button.attributes["aria-pressed"] = state;
+    p.button.onclick = () => { p.button.attributes["aria-pressed"] = "true"; };
+    const {promise} = await p.start(); await p.clock.advance(4000);
+    assert.equal(await promise, state === "false");
+    assert.deepEqual(p.clicks, state === "false" ? ["4"] : []);
+    assert.equal(p.ctrl.stats.confirmed.like, Number(state === "false"));
+    if (state === null) assert.match(p.ctrl.stats.issue, /缺少已赞／未赞状态/);
+  }
+});
+
+test("bare rendering markers without a button wrapper are never clicked", async () => {
+  const p = setup("comment"); p.button.isConnected = false;
+  const icon = p.article.add(new p.Node("marker"));
+  icon.attributes["data-ad-rendering-role"] = "comment_button";
+  const {promise} = await p.start();
+  assert.equal(await promise, false);
+  assert.equal(p.clicks.length, 0);
+});
+
+test("icon comment opens its editor and finds the deeply nested composer submit", async () => {
+  const p = setup("comment"); p.button.innerText = "";
+  const icon = p.button.add(new p.Node("marker"));
+  icon.attributes["data-ad-rendering-role"] = "comment_button";
+  const composer = p.article.add(new p.Node("container"));
+  let parent = composer;
+  for (let i = 0; i < 5; i++) parent = parent.add(new p.Node("container"));
+  const editor = parent.add(new p.Node("editor"));
+  const submit = composer.add(new p.Node("container"));
+  submit.attributes.id = "focused-state-composer-submit";
+  const send = submit.add(new p.Node("button")); send.attributes["aria-label"] = "Post comment";
+  send.onclick = () => { editor.innerText = ""; };
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.confirmed.comment, 1);
+  assert.equal(p.clicks.length, 2);
+  assert.equal(p.keys.length, 0);
+});
+
+for (const storyLabel of ["Share to your story (Friends)", "分享至你的限時動態（朋友）", "分享到你的快拍 (好友)"]) {
+  test(`${storyLabel}: icon share selects story, never Feed or Messenger`, async () => {
+    const p = setup("share"); p.button.innerText = "";
+    const icon = p.button.add(new p.Node("marker"));
+    icon.attributes["data-ad-rendering-role"] = "share_button";
+    const menu = new p.Node("menu"), composer = new p.Node("dialog");
+    menu.add(new p.Node("button", "Share to Feed"));
+    const story = menu.add(new p.Node("button", storyLabel));
+    menu.add(new p.Node("button", "Send in Messenger"));
+    const publish = composer.add(new p.Node("button", "Share"));
+    publish.onclick = () => { p.document.alerts.push(new p.Node("alert", "Your story was shared")); };
+    p.button.onclick = () => { p.document.overlays = [menu]; };
+    story.onclick = () => { p.document.overlays = [composer]; };
+    const {promise} = await p.start(); await p.clock.advance(10000);
+    assert.equal(await promise, true);
+    assert.deepEqual(p.clicks, ["", storyLabel, "Share"]);
+    assert.equal(p.ctrl.stats.confirmed.share, 1);
+  });
+}
+
+test("story matching does not accept unrelated trailing instructions", async () => {
+  const p = setup("share"), menu = new p.Node("menu");
+  menu.add(new p.Node("button", "Share to your story and send in Messenger"));
+  p.button.onclick = () => { p.document.overlays = [menu]; };
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  assert.equal(await promise, true);
+  assert.deepEqual(p.clicks, ["Share"]);
+  assert.equal(p.ctrl.stats.attempted.share, 0);
+});
+
+test("unrecognized post layout is retained as the final zero-action reason", async () => {
+  const p = setup("like");
+  p.document.articles = [];
+  const {promise} = await p.start();
+  assert.equal(await promise, false);
+  assert.match(p.ctrl.stats.issue, /帖子容器/);
+  p.ctrl.stop();
+  assert.match(p.window.__fbActivityLastSnapshot.stats.issue, /帖子容器/);
+});
+
+test("share telemetry requires a new success notice, not an old one", async () => {
+  for (const fresh of [false, true]) {
+    const p = setup("share"), menu = new p.Node("menu"), composer = new p.Node("dialog");
+    const story = menu.add(new p.Node("button", "Share to your story"));
+    const publish = composer.add(new p.Node("button", "Share"));
+    const notice = new p.Node("alert", "Your story was shared");
+    if (!fresh) p.document.alerts = [notice];
+    publish.onclick = () => { composer.isConnected = false; p.document.overlays = []; p.document.alerts = [notice]; };
+    p.button.onclick = () => { p.document.overlays = [menu]; };
+    story.onclick = () => { p.document.overlays = [composer]; };
+    const {promise} = await p.start(); await p.clock.advance(10000); await promise;
+    assert.equal(p.ctrl.stats.attempted.share, 1);
+    assert.equal(p.ctrl.stats.confirmed.share, Number(fresh));
+  }
+});
+
+test("stopping snapshots telemetry and later callbacks cannot add confirmations", async () => {
+  const p = setup("like");
+  p.ctrl.recordInteraction("like");
+  p.ctrl.stop(true);
+  p.ctrl.recordInteraction("like", true);
+  assert.equal(p.ctrl.stats.confirmed.like, 0);
+  assert.equal(p.window.__fbActivityLastSnapshot.stats.attempted.like, 1);
+  assert.equal(p.window.__fbActivityLastSnapshot.runId, "run-1");
 });
 
 test("an unrelated dialog during comment submission does not strand our draft", async () => {
@@ -173,13 +398,14 @@ test("failed comments close their own empty overlay, never a pre-existing user d
 test("a chat appearing during Comment is never adopted as the comment editor", async () => {
   const p = setup("comment"), chat = new p.Node("dialog");
   const editor = chat.add(new p.Node("editor"));
-  chat.add(new p.Node("button", "Close chat"));
+  const close = chat.add(new p.Node("button", "Close chat"));
+  close.onclick = () => { chat.isConnected = false; p.document.overlays = []; };
   chat.add(new p.Node("button", "Send"));
   p.button.onclick = () => p.document.overlays.push(chat);
   const {promise} = await p.start(); await p.clock.advance(10000);
   assert.equal(await promise, false);
   assert.equal(editor.innerText, "");
-  assert.deepEqual(p.clicks, ["Comment"]);
+  assert.deepEqual(p.clicks, ["Comment", "Close chat"]);
 });
 
 for (const closeLabel of ["Close chat", "关闭聊天", "關閉聊天室"]) {
