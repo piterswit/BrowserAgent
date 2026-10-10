@@ -98,7 +98,7 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 
 用户切换其他标签页不会改变换头像目标，但关键步骤会重新激活任务页，可能打断正在使用的浏览器窗口。不要操作任务页里的头像编辑窗口；关闭、导航任务页或切换 Facebook 登录账号可能使任务失败或待确认。网络中断发生在提交保存之后时，头像可能已经更新，应核对后再重试。
 
-当前匹配简体中文、繁体中文和英文按钮。Facebook 的页面布局、按钮文字、裁剪流程或上传限制发生变化时，可能需要调整 `change_avatar.js`。扩展没有绕过账号验证，也没有通过 Facebook 服务端接口核实最终持久化结果。
+所有已启用功能按英文、简体中文和繁体中文 Facebook 界面匹配，包括账号入口和头像、点赞、评论、分享快拍、加入小组、Reels 上下/左右翻页，以及取消已发送好友请求的入口、按钮和限制提示。滚动、连接和浏览器定位不依赖页面语言；插件弹窗和软件提示仍为简体中文。Facebook 的页面布局、按钮文字、裁剪流程或上传限制发生变化时，可能需要补充匹配规则。扩展没有绕过账号验证，也没有通过 Facebook 服务端接口核实最终持久化结果。
 
 ## 扩展权限
 
@@ -123,7 +123,8 @@ v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、
 修改源码后，在扩展管理页面点击“重新加载”，并重启本地软件。已有的 `dist/server.exe` 不会自动包含新的 Python 源码。
 
 ```powershell
-python -m PyInstaller --noconfirm --onefile --windowed --name server --specpath build --icon "WS Browser Bridge/icon/bridge.ico" --add-data "WS Browser Bridge/icon;WS Browser Bridge/icon" server.py
+$iconFolder = (Resolve-Path "WS Browser Bridge/icon").Path
+python -m PyInstaller --noconfirm --onefile --windowed --name server --specpath build --icon "$iconFolder/bridge.ico" --add-data "$iconFolder;WS Browser Bridge/icon" server.py
 ```
 
 上述 Windows 命令包含软件窗口图标和扩展图标资源，输出为 `dist/server.exe`。本机已有的 `server.spec` 也已配置图标，可使用 `python -m PyInstaller --noconfirm server.spec`；仓库目前将该本机配置、`build`、`dist` 和 `release` 设为忽略文件。
@@ -152,7 +153,7 @@ tests/                          通信和账号识别回归测试
 `offscreen.html` 和 `offscreen.js` 是历史实现，当前 manifest 未启用。
 
 ```powershell
-node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs
+node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs tests/cancel_requests.test.cjs
 python -m unittest discover -s tests -p 'test_*.py'
 python tools/check_ui.py
 node tools/check_activity_browser.cjs

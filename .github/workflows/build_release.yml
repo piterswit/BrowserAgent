@@ -46,20 +46,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest discover -s tests -p 'test_*.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs
+          node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs tests/cancel_requests.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build EXE
         shell: powershell
         run: |
+          $iconFolder = Join-Path $env:GITHUB_WORKSPACE "WS Browser Bridge/icon"
           python -m PyInstaller server.py `
             --onefile `
             --noconsole `
             --clean `
             --noconfirm `
             --specpath build `
-            --icon "WS Browser Bridge/icon/bridge.ico" `
-            --add-data "WS Browser Bridge/icon;WS Browser Bridge/icon" `
+            --icon "$iconFolder/bridge.ico" `
+            --add-data "$iconFolder;WS Browser Bridge/icon" `
             --name "FB_server"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

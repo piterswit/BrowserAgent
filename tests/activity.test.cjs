@@ -211,6 +211,16 @@ test("stop while waiting to click a Reels arrow prevents the click", async () =>
   p.window.__fbActivityRuntime.stop(); await p.clock.advance(20000);
   assert.equal(clicks, 0); assert.equal(p.clock.jobs.size, 0);
 });
+
+for (const [next, previous] of [["Next reel", "Previous reel"], ["下一条视频", "上一条视频"], ["下一則短影片", "上一則短影片"], ["下一個影片", "上一個影片"]]) {
+  test(`Reels localized arrows: ${next} / ${previous}`, async () => {
+    const clicks = [];
+    const p = reelLayout({random: 0, buttons: [reelButton(previous, () => clicks.push("previous")), reelButton(next, () => clicks.push("next"))]});
+    p.inject(); await p.clock.advance(10000);
+    assert.ok(clicks.includes("next"));
+    assert.ok(clicks.includes("previous"));
+  });
+}
 test("dense visible posts receive more reading time than an empty feed", async () => {
   async function progress(text) {
     const p = page();

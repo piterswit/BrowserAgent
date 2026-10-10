@@ -1,3 +1,11 @@
+(() => {
+const requestLabels = {
+    cancel: /^(Cancel request|取消请求|取消好友请求|取消邀请|取消邀請|取消邀约|取消邀約|取消交友邀請|取消好友邀請)$/i,
+    sent: /^(View sent requests|Sent requests|查看已发送请求|查看已发送的请求|查看发出的请求|已发送的请求|发出的请求|查看已傳送邀請|查看送出的邀請|查看已送出邀請|查看已送出的邀請|查看已發送的邀請|查看已發送的交友邀請|已傳送邀請|送出的邀請|已送出的邀請|已發送的邀請|已發送的交友邀請)$/i,
+    blocked: /could(?:n['’]t| not) process|unable to process|please try again|try again later|temporarily blocked|无法处理|無法處理|请重试|请稍后再试|請重試|請再試一次|請稍後再試|暂时被封锁|暫時遭到封鎖|暫時被封鎖/i
+};
+const requestText = el => (el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim();
+
 // ===== 基础工具 =====
 function rand(a, b) {
     return Math.floor(Math.random() * (b - a + 1)) + a;
@@ -30,13 +38,6 @@ async function waitFor(fn, timeout = 15000) {
 }
 
 async function main() {
-    // 【超级兼容池】同时放入繁体和简体的关键字，彻底解决多语言版本问题
-    const keywords = ["取消邀請", "取消请求", "Cancel request"];
-    const modalTitles = ["送出的邀請", "已傳送邀請", "查看送出的邀請", "发出的请求", "已发送的请求", "View sent requests"];
-
-    // 【核心修正：模糊核心词池】不管是“要求”还是“请求”，“再试一次”还是“重试”，只要包含核心词就干掉
-    const blockKeywords = ["无法处理", "無法處理", "请重试", "請再試一次"];
-    
     let progressBox = null;
     function showProgress(text){
         if(!progressBox){
@@ -96,23 +97,25 @@ async function main() {
 
     // 辅助函数：深度检测当前页面有没有弹出FB风控警告
     function checkFBBlockPopup() {
-        const bodyText = document.body.innerText || "";
-        return blockKeywords.some(fbKw => bodyText.includes(fbKw));
+        return [...document.querySelectorAll('[role="dialog"], [role="alert"]')]
+            .some(el => isVisible(el) && requestLabels.blocked.test(el.innerText || ""));
     }
 
     // 1. 获取页面上所有的弹窗
-    let dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+    let dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
 
     // 【终极全语言定位逻辑】
     let modalContainer = dialogs.find(dialog => {
-        const text = dialog.innerText || "";
-        return modalTitles.some(title => text.includes(title)) || keywords.some(kw => text.includes(kw));
+        return [...dialog.querySelectorAll('[role="heading"], h1, h2, [role="button"], button')]
+            .some(el => requestLabels.sent.test(requestText(el)) || requestLabels.cancel.test(requestText(el)));
     });
 
     if (!modalContainer) {
         alert("❌ 未能找到好友请求弹窗！\n请确保弹窗已经点开并显示在屏幕中央，然后再点插件。");
         return;
     }
+
+    if (checkFBBlockPopup()) return;
 
     // 精准抓取真正拥有滚动条的核心 DOM 元素
     let scrollElement = Array.from(modalContainer.querySelectorAll('div')).find(el => {
@@ -166,9 +169,7 @@ async function main() {
     console.log("%c========= 🎯 第二阶段：终极收割批量取消 =========", "color: magenta; font-weight: bold;");
 
     let buttons = Array.from(modalContainer.querySelectorAll('div[role="button"], button')).filter(btn => {
-        if (!btn.innerText) return false;
-        const btnText = btn.innerText.trim();
-        return keywords.includes(btnText);
+        return isVisible(btn) && requestLabels.cancel.test(requestText(btn));
     });
 
     console.log(`%c统计：总共在页面上成功憋出了 ${buttons.length} 个可见的取消按钮！`, "color: #00ff00; font-weight: bold;");
@@ -201,9 +202,9 @@ async function main() {
 
             // 若没有风控弹窗，再走常规的DOM变化检测
             const isStillInPage = document.body.contains(buttons[i]);
-            const textAfterClick = isStillInPage ? (buttons[i].innerText || "").trim() : "";
+            const textAfterClick = isStillInPage ? requestText(buttons[i]) : "";
 
-            if (isStillInPage && keywords.includes(textAfterClick)) {
+            if (isStillInPage && requestLabels.cancel.test(textAfterClick)) {
                 console.warn(`⚠️ 第 ${i + 1} 个按钮点击后依然完好存在且文字未变。`);
                 isSuccess = false;
             } else {
@@ -253,15 +254,8 @@ async function auto() {
     // 找"查看已发送请求"
     const btn = await waitFor(() => {
 
-        return [...document.querySelectorAll('[role="button"]')]
-            .find(el => {
-                const t = el.innerText.trim();
-                return t.includes("查看已发送请求")
-                    || t.includes("查看已傳送邀請")
-                    || t.includes("查看送出的邀請")
-                    || t.includes("View sent requests")
-                    || t.includes("Sent requests");
-            });
+        return [...document.querySelectorAll('[role="button"], button, a[href]')]
+            .find(el => isVisible(el) && requestLabels.sent.test(requestText(el)));
 
     });
 
@@ -279,4 +273,5 @@ async function auto() {
     await main();
 }
 
-auto();
+return auto();
+})();

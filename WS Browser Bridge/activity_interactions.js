@@ -1,15 +1,15 @@
 (() => {
   const labels = {
-    like: /^(Like|赞|讚|点赞|按讚)$/i,
-    comment: /^(Comment|评论|留言|回覆)$/i,
+    like: /^(Like|赞|讚|点赞|點讚|按赞|按讚)$/i,
+    comment: /^(Comment|评论|評論|留言|回覆)$/i,
     share: /^(Share|分享)$/i,
-    story: /^(Share to (your )?story|分享至快拍|分享到快拍|分享至限時動態|分享到限時動態|限時動態|快拍)$/i,
-    publish: /^(Share( now)?|分享|立即分享|发布|發佈)$/i,
+    story: /^(Share to (your )?story|分享至(你的|您的)?(快拍|限时动态|限時動態)|分享到(你的|您的)?(快拍|限时动态|限時動態)|限时动态|限時動態|快拍)$/i,
+    publish: /^(Share( now)?|Post|分享|立即分享|发布|發佈|發表)$/i,
     join: /^(Join( group)?|加入(小组|小組|社團)?)$/i
   };
   const comments = ["Thanks for sharing!", "Interesting perspective.", "Nice post!", "Great photos!"];
   const random = (min, max) => min + Math.random() * (max - min);
-  const text = node => (node.getAttribute("aria-label") || node.innerText || "").trim();
+  const text = node => (node.getAttribute("aria-label") || node.innerText || "").replace(/\s+/g, " ").trim();
   const visible = node => {
     if (!node?.isConnected || node.getAttribute("aria-disabled") === "true" || node.disabled) return false;
     const rect = node.getBoundingClientRect();
@@ -18,7 +18,7 @@
   const buttons = scope => [...scope.querySelectorAll('[role="button"], button')].filter(visible);
   const unliked = node => labels.like.test(text(node)) &&
     !["aria-pressed", "aria-checked"].some(name => node.getAttribute(name) === "true") &&
-    !/^(Liked|Unlike|Remove like|已赞|已讚|取消赞|收回讚)$/i.test((node.innerText || "").trim());
+    !/^(Liked|Unlike|Remove like|已赞|已讚|已点赞|已點讚|取消赞|取消讚|取消点赞|取消點讚|收回赞|收回讚)$/i.test((node.innerText || "").trim());
   const findButton = (scope, pattern) => buttons(scope).find(node => pattern.test(text(node)));
   const overlays = () => [...document.querySelectorAll('[role="dialog"], [role="menu"]')].filter(visible);
   const history = window.__fbInteractionHistory ||= new Map();

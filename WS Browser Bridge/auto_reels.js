@@ -4,8 +4,8 @@
   const random = (min, max) => min + Math.random() * (max - min);
   let lastBackwards = false;
   const labels = {
-    next: /^(Next( reel| video)?|Go to next (reel|video)|下一(个|個|部|段)?(短视频|视频|影片|Reel)?|下一則|下一则)$/i,
-    previous: /^(Previous( reel| video)?|Go to previous (reel|video)|上一(个|個|部|段)?(短视频|视频|影片|Reel)?|上一則|上一则)$/i
+    next: /^(Next( reel| video)?|Go to next (reel|video)|下一(个|個|部|段|条|條|則|则)?(短视频|短影片|视频|影片|Reel|Reels)?|下一个视频|下一個影片)$/i,
+    previous: /^(Previous( reel| video)?|Go to previous (reel|video)|上一(个|個|部|段|条|條|則|则)?(短视频|短影片|视频|影片|Reel|Reels)?|上一个视频|上一個影片)$/i
   };
   const visible = node => {
     if (!node?.isConnected || node.disabled || node.getAttribute("aria-disabled") === "true") return false;
@@ -26,7 +26,7 @@
     const root = video?.closest('[role="dialog"], [role="main"]') || document.querySelector('[role="main"]') || document;
     const controls = [...root.querySelectorAll('[role="button"], button')].filter(visible);
     const find = direction => controls.find(node => labels[direction].test(
-      (node.getAttribute("aria-label") || node.getAttribute("title") || node.innerText || "").trim()));
+      (node.getAttribute("aria-label") || node.getAttribute("title") || node.innerText || "").replace(/\s+/g, " ").trim()));
     const next = find("next"), previous = find("previous");
     ctrl.playerScope = root.getAttribute?.("role") === "dialog" && video ? root : null;
     return {video, next, previous};

@@ -289,17 +289,18 @@ for (const [url, canonical, deepLink, expectedId, expectedUsername] of [
   });
 }
 
-test("notification headings never replace the profile's name and photo", async () => {
+for (const [heading, pictureLabel] of [["Notifications", "Alice Chen's profile picture"], ["通知消息", "Alice Chen的头像"], ["通知訊息", "Alice Chen的頭像"], ["通知", "Alice Chen的大頭貼"]]) {
+test(`${heading}: localized headings never replace the profile's name and photo`, async () => {
   const b = bridge("input");
   b.context.location = {href: "https://www.facebook.com/alice"};
   b.context.document = {
     title: "(3) Facebook",
     querySelector: selector => selector === 'meta[property="og:title"]' ? {content: "Alice Chen | Facebook"} : null,
     querySelectorAll: selector => {
-      if (selector.startsWith('[role="main"] h1')) return [{innerText: "Notifications", closest: () => null}];
+      if (selector.startsWith('[role="main"] h1')) return [{innerText: heading, closest: () => null}];
       if (selector.startsWith('[role="main"] img')) return [{
         currentSrc: "https://scontent.example.fbcdn.net/alice.jpg",
-        closest: () => null, getAttribute: name => name === "alt" ? "Alice Chen's profile picture" : null,
+        closest: () => null, getAttribute: name => name === "alt" ? pictureLabel : null,
         getBoundingClientRect: () => ({width: 168, height: 168, top: 80})
       }];
       return [];
@@ -310,6 +311,7 @@ test("notification headings never replace the profile's name and photo", async (
   assert.equal(identity.fb_name, "Alice Chen");
   assert.equal(identity.avatar_url, "https://scontent.example.fbcdn.net/alice.jpg");
 });
+}
 
 test("main profile heading is used when metadata is missing", async () => {
   const b = bridge("input");

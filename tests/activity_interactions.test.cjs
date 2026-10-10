@@ -168,3 +168,36 @@ test("pre-existing dialogs and offscreen targets are not clicked", async () => {
   offscreen.button.getBoundingClientRect = () => ({width: 100, height: 30, top: 1000, bottom: 1030});
   const attempt = await offscreen.start(); assert.equal(await attempt.promise, false);
 });
+
+for (const labels of [
+  {like: "点赞", comment: "评论", share: "分享", story: "分享到你的快拍", publish: "发布", join: "加入小组", liked: "已点赞"},
+  {like: "按讚", comment: "留言", share: "分享", story: "分享至你的限時動態", publish: "發佈", join: "加入社團", liked: "已讚"},
+  {like: "點讚", comment: "評論", share: "分享", story: "分享到限時動態", publish: "發表", join: "加入小組", liked: "已點讚"}
+]) {
+  for (const kind of ["like", "comment", "share", "join"]) test(`${labels[kind]}: localized interaction`, async () => {
+    const p = setup(kind);
+    p.button.innerText = labels[kind];
+    if (kind === "comment") p.article.add(new p.Node("editor"));
+    if (kind === "share") {
+      const menu = new p.Node("menu"), composer = new p.Node("dialog");
+      const story = menu.add(new p.Node("button", labels.story));
+      composer.add(new p.Node("button", labels.publish));
+      p.button.onclick = () => p.document.overlays.push(menu);
+      story.onclick = () => { p.document.overlays = [composer]; };
+    }
+    const {promise} = await p.start();
+    await p.clock.advance(10000);
+    assert.equal(await promise, true);
+    assert.equal(p.clicks[0], labels[kind]);
+    if (kind === "share") assert.deepEqual(p.clicks, [labels.share, labels.story, labels.publish]);
+    if (kind === "comment") assert.deepEqual(p.keys, ["keydown", "keyup"]);
+  });
+  test(`${labels.liked}: aria Like does not toggle a localized liked button`, async () => {
+    const p = setup("like");
+    p.button.innerText = labels.liked;
+    p.button.attributes["aria-label"] = "Like";
+    const {promise} = await p.start();
+    assert.equal(await promise, false);
+    assert.equal(p.clicks.length, 0);
+  });
+}

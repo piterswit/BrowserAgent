@@ -66,7 +66,7 @@ async function readProfileIdentity(tabId) {
       let partial = null;
       const cleanName = text => (typeof text === "string" ? text : "").replace(/^\(\d+\)\s*/, "")
         .replace(/\s*[|\-]\s*Facebook.*$/i, "").trim();
-      const validName = text => text && !/^(notifications?|facebook|home|menu|settings|your profile|通知|通知消息|首頁|首页|菜单|選單|设置|設定|个人主页|個人檔案)$/i.test(text);
+      const validName = text => text && !/^(notifications?|facebook|home|menu|settings|your profile|通知|通知消息|通知訊息|首頁|首页|菜单|菜單|選單|设置|設定|个人主页|個人主頁|個人檔案|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(text);
       const normalizeUser = user => {
         if (!user || typeof user !== "object") return null;
         const id = String(user.USER_ID || user.ACCOUNT_ID || "");
@@ -119,7 +119,7 @@ async function readProfileIdentity(tabId) {
               (url.pathname === "/profile.php" && /^[1-9]\d+$/.test(url.searchParams.get("id") || "") || part && !part.includes("/") && !excluded.test(part)) &&
               (user?.id && (url.searchParams.get("id") === user.id || part === user.id) ||
                 user?.name && label.toLowerCase() === user.name.toLowerCase() ||
-                /^(your profile|你的个人主页|你的個人檔案)$/i.test(label) || !user && validName(label));
+                /^(your profile|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(label) || !user && validName(label));
           } catch { return false; }
         }) : null;
         const linked = ownLink ? new URL(ownLink.href, current.href) : null;
@@ -136,7 +136,7 @@ async function readProfileIdentity(tabId) {
           .filter(el => !el.closest('[role="navigation"], [role="banner"], [role="dialog"]'))
           .sort((a, b) => Number(!!b.closest('[role="main"], main')) - Number(!!a.closest('[role="main"], main')))
           .map(el => cleanName(el.innerText));
-        const linkedName = cleanName(ownLink?.getAttribute("aria-label")).replace(/(?:'s|’s)\s+profile.*$/i, "").replace(/的(?:个人主页|個人檔案|头像|大頭貼).*$/, "");
+        const linkedName = cleanName(ownLink?.getAttribute("aria-label")).replace(/(?:'s|’s)\s+profile.*$/i, "").replace(/的(?:个人主页|個人主頁|個人檔案|头像|頭像|大頭貼).*$/, "");
         const name = [user?.name, cleanName(document.querySelector('meta[property="og:title"]')?.content), linkedName, ...headings, cleanName(document.title)]
           .find(validName);
         if ((name || fbId || username) && /(^|\.)facebook\.com$/.test(profile.hostname)) {
@@ -150,12 +150,12 @@ async function readProfileIdentity(tabId) {
               const description = [el.getAttribute("alt"), el.getAttribute("aria-label"), parent?.getAttribute("aria-label")].filter(Boolean).join(" ");
               const rect = el.getBoundingClientRect();
               return rect.width >= 100 && rect.height >= 100 && rect.width / rect.height > 0.8 && rect.width / rect.height < 1.25 &&
-                !/cover|封面/i.test(description) && /profile picture|头像|大頭貼/i.test(description) &&
-                (!name || !el.getAttribute("alt") || description.toLowerCase().includes(name.toLowerCase()) || /^(profile picture|头像|大頭貼)$/i.test(description));
+                !/cover|封面/i.test(description) && /profile picture|头像|頭像|大頭貼/i.test(description) &&
+                (!name || !el.getAttribute("alt") || description.toLowerCase().includes(name.toLowerCase()) || /^(profile picture|头像|頭像|大頭貼)$/i.test(description));
             }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
           const picture = pictures[0];
           const linkPicture = ownLink?.querySelector('img, svg image');
-          const accountMenu = document.querySelector('[aria-label="Your profile"], [aria-label="你的个人主页"], [aria-label="你的头像"], [aria-label="您的个人主页"], [aria-label="你的個人檔案"], [aria-label="你的大頭貼"]');
+          const accountMenu = document.querySelector('[aria-label="Your profile"], [aria-label="你的个人主页"], [aria-label="你的头像"], [aria-label="您的个人主页"], [aria-label="您的头像"], [aria-label="你的個人檔案"], [aria-label="您的個人檔案"], [aria-label="你的個人主頁"], [aria-label="您的個人主頁"], [aria-label="你的大頭貼"], [aria-label="您的大頭貼"], [aria-label="你的頭像"], [aria-label="您的頭像"]');
           const menuPicture = accountMenu?.querySelector('img, svg image');
           const source = el => el?.currentSrc || el?.src || el?.getAttribute("href") || el?.getAttribute("xlink:href");
           const avatarUrl = source(picture) || user?.picture || source(linkPicture) || source(menuPicture) || null;

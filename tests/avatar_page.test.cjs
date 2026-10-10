@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/change_avatar.js"), "utf8");
 
-function page({input = true, changed = true, error = "", menu = false, accepted = true} = {}) {
+function page({input = true, changed = true, error = "", success = "", menu = false, accepted = true, labels = {upload: "Upload photo", save: "Save", edit: "Edit profile picture", picture: "Alice's profile picture", choose: "Choose profile picture", see: "See profile picture"}} = {}) {
   let clock = 0, open = false, scrolled = false, menuOpen = false;
   const messages = [];
   const element = text => ({
@@ -18,11 +18,11 @@ function page({input = true, changed = true, error = "", menu = false, accepted 
   const picture = {...element(""), currentSrc: "old-avatar.png", getBoundingClientRect: () => ({width: 168, height: 168})};
   const container = {isConnected: true, querySelectorAll: () => [picture]};
   const file = {accept: "image/*", attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }};
-  const upload = element("Upload photo"), save = element("Save"), edit = element(menu ? "Alice's profile picture" : "Edit profile picture");
+  const upload = element(labels.upload), save = element(labels.save), edit = element(menu ? labels.picture : labels.edit);
   if (menu) edit.getBoundingClientRect = () => ({width: 168, height: 168, top: 120});
-  const choose = {...element("Choose profile picture"), click() { menuOpen = false; open = true; }};
-  const see = {...element("See profile picture"), click() { throw new Error("must not view photo"); }};
-  const dialog = {...element("Update profile picture Upload photo Save"), isConnected: true,
+  const choose = {...element(labels.choose), click() { menuOpen = false; open = true; }};
+  const see = {...element(labels.see), click() { throw new Error("must not view photo"); }};
+  const dialog = {...element(`${labels.edit} ${labels.upload} ${labels.save}`), isConnected: true,
     querySelectorAll: selector => selector === 'input[type="file"]' ? (input ? [file] : []) : [upload, save]};
   save.closest = selector => selector === '[role="dialog"]' ? dialog : null;
   save.click = () => { dialog.isConnected = false; open = false; if (changed) picture.currentSrc = "new-avatar.png"; };
@@ -38,7 +38,7 @@ function page({input = true, changed = true, error = "", menu = false, accepted 
     document: {querySelectorAll: selector => {
       if (selector === '[role="dialog"]') return open ? [dialog, wrongDialog] : [];
       if (selector === '[role="menu"] [role="menuitem"]') return menuOpen ? [see, choose] : [];
-      if (selector.includes('[role="alert"]')) return error ? [element(error)] : [];
+      if (selector.includes('[role="alert"]')) return error ? [element(error)] : success && !dialog.isConnected ? [element(success)] : [];
       return [edit];
     }}
   });
@@ -95,3 +95,20 @@ test("expired task cannot click Save", async () => {
   p.api.operationId = "expired";
   await assert.rejects(p.api.save(), /无法激活/);
 });
+
+for (const labels of [
+  {upload: "上传照片", save: "保存", edit: "编辑头像", picture: "Alice的头像", choose: "选择头像", see: "查看头像", success: "头像已更新", error: "上传失败"},
+  {upload: "上傳相片", save: "儲存", edit: "編輯大頭貼", picture: "Alice的大頭貼", choose: "選擇大頭貼", see: "檢視大頭貼", success: "大頭貼已更新", error: "上傳失敗"},
+  {upload: "上傳照片", save: "儲存", edit: "編輯頭像", picture: "Alice的頭像", choose: "選擇頭像", see: "查看頭像", success: "頭像已儲存", error: "發生錯誤"}
+]) {
+  for (const menu of [false, true]) test(`${labels.edit}: ${menu ? "menu" : "direct"} upload and save`, async () => {
+    const p = page({labels, menu, changed: false, success: labels.success});
+    assert.equal(await p.api.prepare(), "input");
+    assert.equal((await p.api.save()).confirmed, true);
+  });
+  test(`${labels.edit}: localized upload error remains a failure`, async () => {
+    const p = page({labels, error: labels.error});
+    await p.api.prepare();
+    await assert.rejects(p.api.save(), error => error.message === labels.error);
+  });
+}
