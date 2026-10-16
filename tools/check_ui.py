@@ -73,6 +73,7 @@ def main():
         with patch.object(app.account_menu, "tk_popup"), patch.object(app.account_menu, "grab_release"):
             app.show_account_menu(SimpleNamespace(y=row[1] + 5, x_root=100, y_root=100))
         assert app.account_menu.entrycget(0, "label") == "定位浏览器"
+        assert app.account_menu.entrycget(2, "label") == "查看执行详情"
         assert app.list_view.selection() == ("preview-1", "preview-2")
         for geometry in ("1020x700", "860x560"):
             root.geometry(geometry)

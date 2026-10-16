@@ -33,7 +33,8 @@
   const unliked = node => isAction(node, "like") && !liked(node) &&
     (matches(node, labels.like) || ["aria-pressed", "aria-checked"].some(name => node.getAttribute(name) === "false"));
   const findButton = (scope, pattern) => buttons(scope).find(node => matches(node, pattern));
-  const overlays = () => [...document.querySelectorAll('[role="dialog"], [role="menu"]')].filter(visible);
+  const scopeVisible = node => window.__fbActivityRuntime.visible(node);
+  const overlays = () => [...document.querySelectorAll('[role="dialog"], [role="menu"]')].filter(scopeVisible);
   const history = window.__fbInteractionHistory ||= new Map();
   for (const [key, time] of history) if (Date.now() - time > 86400000) history.delete(key);
   while (history.size > 2000) history.delete(history.keys().next().value);
@@ -59,19 +60,62 @@
 
   window.__fbActivityInteractions = ctrl => {
     const counts = {like: 0, comment: 0, share: 0, join: 0};
+    const home = ctrl.mode === "home";
     const reels = window.__fbActivityRequest?.mode === "reels";
-    const limits = {like: reels ? 2 : 3, comment: 2, share: 2, join: 1};
+    const limits = {like: reels ? 2 : 3, comment: 2, share: home ? 1 : 2, join: 1};
+    const homePlan = ["like", "comment", "like", "share", "comment", "like"];
+    let planIndex = 0;
+    const scanIssues = {};
+    const recordAttempt = kind => { counts[kind]++; ctrl.recordInteraction(kind); };
     const seenNodes = new WeakSet();
-    let nextAttempt = Date.now() + random(30000, 50000);
+    let nextAttempt = Date.now() + (home ? random(20000, 30000) : random(30000, 50000));
     const ownedOverlays = new Set();
+    const pendingDrafts = new Map();
+    let pendingNotification = null;
     const draft = node => (node.value || node.innerText || "").trim();
     const editors = scope => [...scope.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')];
     const closeWords = /^(Close|Close dialog|关闭|關閉)$/i;
     let nextNotifications = Date.now() + random(45000, 90000), notificationVisits = 0;
+    function cleanupDrafts() {
+      for (const [editor, {scope, value, lastInput}] of pendingDrafts) {
+        if (!editor.isConnected || draft(editor) !== value || ctrl.userInputChanged(lastInput)) {
+          pendingDrafts.delete(editor); continue;
+        }
+        ctrl.guard();
+        if (!ctrl.canAct(scope, editor, true)) continue;
+        if (editor.tagName === "TEXTAREA") {
+          const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(editor), "value")?.set;
+          if (setter) setter.call(editor, "");
+          else editor.value = "";
+          editor.dispatchEvent(new Event("input", {bubbles: true}));
+        } else if (document.createRange && window.getSelection && editor.isContentEditable) {
+          editor.focus();
+          const range = document.createRange(); range.selectNodeContents(editor);
+          const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+          document.execCommand("delete", false, null);
+          editor.dispatchEvent(new Event("input", {bubbles: true}));
+        }
+        if (!draft(editor)) {
+          if (document.activeElement === editor) editor.blur();
+          pendingDrafts.delete(editor);
+        }
+      }
+    }
     function safeCleanup() {
-      if (!ctrl.run || document.hidden || Date.now() - ctrl.lastInput < 10000) return;
+      if (!ctrl.pageAvailable() || ctrl.recentUserInput()) return;
+      cleanupDrafts();
+      if (pendingNotification) {
+        const {trigger, panel, lastInput} = pendingNotification;
+        if (trigger.isConnected && !ctrl.userInputChanged(lastInput) &&
+            (trigger.getAttribute("aria-expanded") === "true" || panel && visible(panel))) {
+          ctrl.guard();
+          trigger.click();
+          if (panel) ownedOverlays.add(panel);
+        }
+        pendingNotification = null;
+      }
       for (const scope of ownedOverlays) {
-        if (!visible(scope)) { ownedOverlays.delete(scope); continue; }
+        if (!scopeVisible(scope)) { ownedOverlays.delete(scope); continue; }
         if (editors(scope).some(node => draft(node))) continue;
         const close = findButton(scope, closeWords);
         if (close) { close.click(); ownedOverlays.delete(scope); }
@@ -80,7 +124,7 @@
     }
     function maintainPage() {
       safeCleanup();
-      if (ctrl.mode !== "home" || !ctrl.run || document.hidden || Date.now() - ctrl.lastInput < 10000) return;
+      if (ctrl.mode !== "home" || !ctrl.pageAvailable() || ctrl.recentUserInput()) return;
       for (const button of buttons(document).filter(node => closeChatWords.test(text(node)))) {
         let scope = button.closest('[role="dialog"], [role="complementary"]');
         if (!scope) {
@@ -126,12 +170,8 @@
         return true;
       } catch (error) { if (error.name === "AbortError") throw error; return false; }
       finally {
-        if (ctrl.run && !document.hidden && ctrl.lastInput === lastInput &&
-            (trigger.getAttribute("aria-expanded") === "true" || panel && visible(panel))) {
-          trigger.click();
-          if (panel) ownedOverlays.add(panel);
-          safeCleanup();
-        }
+        if (ctrl.run) pendingNotification = {trigger, panel, lastInput};
+        safeCleanup();
       }
     }
     const check = (scope, editor) => {
@@ -164,6 +204,7 @@
     }
     function candidates(kind) {
       const items = [];
+      delete scanIssues[kind];
       if (kind === "join") {
         for (const button of buttons(document).filter(node => matches(node, labels.join))) {
           let scope = button.parentElement;
@@ -180,7 +221,9 @@
           const button = actionButtons(scope, kind).find(node => kind !== "like" || unliked(node));
           if (!button || (kind === "like" && !unliked(button))) continue;
           const id = identity(scope, kind);
-          if (kind !== "like" && !id) continue;
+          if (kind !== "like" && !id) {
+            scanIssues[kind] = "找到入口，但缺少可校验的帖子链接"; continue;
+          }
           items.push({button, scope, key: id});
         }
         if (reels && kind === "like" && !items.length) {
@@ -196,7 +239,9 @@
     async function comment(item) {
       // Do not replace or submit someone else's draft.
       const selector = '[contenteditable="true"][role="textbox"], textarea';
-      if ([...item.scope.querySelectorAll(selector)].some(node => (node.value || node.innerText || "").trim())) return false;
+      if ([...item.scope.querySelectorAll(selector)].some(node => (node.value || node.innerText || "").trim())) {
+        ctrl.noteInteractionIssue("帖子已有未发送草稿", "comment"); return false;
+      }
       const previous = new Set(overlays());
       await click(item.button, null, null, () => identity(item.scope, "comment") === item.key);
       let scope = item.scope;
@@ -205,7 +250,9 @@
         if (scope !== item.scope) ownedOverlays.add(scope);
         return [...scope.querySelectorAll(selector)].find(visible);
       }, () => scope);
-      if (!editor || (editor.value || editor.innerText || "").trim()) return false;
+      if (!editor || (editor.value || editor.innerText || "").trim()) {
+        ctrl.noteInteractionIssue(editor ? "评论框已有草稿" : "点击评论后未找到可见的评论框", "comment"); return false;
+      }
       const value = comments[Math.floor(Math.random() * comments.length)];
       const lastInput = ctrl.lastInput;
       if (scope !== item.scope) ownedOverlays.add(scope);
@@ -215,11 +262,13 @@
         editor.focus();
         await ctrl.sleep(random(1500, 3000));
         check(scope, editor);
-        if (typeof document.execCommand !== "function" || !document.execCommand("insertText", false, value)) return false;
+        if (typeof document.execCommand !== "function" || !document.execCommand("insertText", false, value)) {
+          ctrl.noteInteractionIssue("未能向评论框写入内容", "comment"); return false;
+        }
         inserted = true;
         await ctrl.sleep(random(1500, 3000));
         check(scope, editor);
-        if (draft(editor) !== value) return false;
+        if (draft(editor) !== value) { ctrl.noteInteractionIssue("评论内容发生变化，未提交", "comment"); return false; }
         const sendWords = /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i;
         let parent = editor.parentElement, send;
         for (let depth = 0; parent && scope.contains(parent) && depth < 8; depth++, parent = parent.parentElement) {
@@ -229,9 +278,9 @@
           send = submit.map(node => findButton(node, sendWords)).find(Boolean) || findButton(parent, sendWords);
           if (send || parent === scope) break;
         }
-        if (send) await click(send, scope, editor, () => draft(editor) === value, () => ctrl.recordInteraction("comment"));
+        if (send) await click(send, scope, editor, () => draft(editor) === value, () => recordAttempt("comment"));
         else {
-          ctrl.recordInteraction("comment");
+          recordAttempt("comment");
           editor.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
           editor.dispatchEvent(new KeyboardEvent("keyup", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
         }
@@ -246,21 +295,11 @@
         return submitted;
       } finally {
         // Never erase a user's edit, retry an uncertain submission, or act after Stop.
-        if (ctrl.run && !document.hidden && ctrl.lastInput === lastInput) {
-          if (inserted && !submitted && editor.isConnected && draft(editor) === value) {
-            if (editor.tagName === "TEXTAREA") {
-              const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(editor), "value")?.set;
-              if (setter) setter.call(editor, "");
-              else editor.value = "";
-              editor.dispatchEvent(new Event("input", {bubbles: true}));
-            } else if (document.createRange && window.getSelection && editor.isContentEditable) {
-              editor.focus();
-              const range = document.createRange(); range.selectNodeContents(editor);
-              const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-              document.execCommand("delete", false, null);
-              editor.dispatchEvent(new Event("input", {bubbles: true}));
-            }
-          }
+        if (ctrl.run && inserted && !submitted && editor.isConnected && draft(editor) === value) {
+          pendingDrafts.set(editor, {scope, value, lastInput});
+        }
+        if (ctrl.pageAvailable() && !ctrl.userInputChanged(lastInput)) {
+          cleanupDrafts();
           if (!draft(editor) && document.activeElement === editor) editor.blur();
           safeCleanup();
         }
@@ -270,33 +309,42 @@
       const previous = new Set(overlays());
       await click(item.button, null, null, () => identity(item.scope, "share") === item.key);
       const menu = await openedOverlay(previous);
-      if (!menu) return;
+      if (!menu) { ctrl.noteInteractionIssue("点击分享后未识别分享菜单", "share"); return; }
       const option = findButton(menu, labels.story);
-      if (!option) return;
+      if (!option) { ctrl.noteInteractionIssue("分享菜单没有可见的快拍入口", "share"); return; }
+      const previousMessages = new Map([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => [node, text(node)]));
+      const successNotice = () => [...document.querySelectorAll('[role="alert"], [role="status"]')].filter(visible)
+        .some(node => previousMessages.get(node) !== text(node) && /story.*(shared|added|published)|shared.*story|(?:快拍|限时动态|限時動態).*(已分享|已发布|已發佈|已發表|成功)|(?:已分享|已发布|已發佈|已發表).*(?:快拍|限时动态|限時動態)/i.test(text(node)));
       const beforeStory = new Set(overlays());
-      await click(option, menu);
-      const composer = await openedOverlay(beforeStory);
-      if (!composer) return;
+      const beforeText = texts(menu).join("\n");
+      // Selecting this entry may publish immediately; never submit it twice to find out.
+      await click(option, menu, null, () => identity(item.scope, "share") === item.key, () => recordAttempt("share"));
+      let composer;
+      const next = await waitFor(() => {
+        if (successNotice()) return "confirmed";
+        composer = overlays().find(node => !beforeStory.has(node)) ||
+          (scopeVisible(menu) && texts(menu).join("\n") !== beforeText && findButton(menu, labels.publish) ? menu : null);
+        return composer;
+      }, () => composer || overlays().find(node => !beforeStory.has(node)) || menu);
+      if (next === "confirmed") { ctrl.recordInteraction("share", true); return; }
+      if (!composer) { ctrl.noteInteractionIssue("已选择快拍入口，未收到成功提示或确认窗口，不重发", "share"); return; }
+      ownedOverlays.add(composer);
       check(composer);
       const publish = findButton(composer, labels.story) || findButton(composer, labels.publish);
       if (publish) {
-        const previousMessages = new Map([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => [node, text(node)]));
-        await click(publish, composer, null, () => true, () => ctrl.recordInteraction("share"));
+        await click(publish, composer);
         await ctrl.sleep(1500);
         ctrl.guard();
-        const confirmed = [...document.querySelectorAll('[role="alert"], [role="status"]')].filter(visible)
-          .some(node => previousMessages.get(node) !== text(node) && /story.*(shared|added|published)|shared.*story|(?:快拍|限时动态|限時動態).*(已分享|已发布|已發佈|已發表|成功)|(?:已分享|已发布|已發佈|已發表).*(?:快拍|限时动态|限時動態)/i.test(text(node)));
-        if (confirmed) ctrl.recordInteraction("share", true);
-      }
+        if (successNotice()) ctrl.recordInteraction("share", true);
+      } else ctrl.noteInteractionIssue("快拍确认窗口没有可见的发布按钮", "share");
     }
     async function execute(kind, item) {
       check();
       if (counts[kind] >= limits[kind] || seenNodes.has(item.button) ||
           (item.key && history.has(kind + ":" + item.key))) return false;
-      // Reserve attempts before clicking: an uncertain submission must not be repeated.
+      // Reserve the target before opening it; submission budgets are charged at the submit boundary.
       seenNodes.add(item.button);
       if (item.key) history.set(kind + ":" + item.key, Date.now());
-      counts[kind]++;
       if (kind === "comment") return await comment(item);
       else if (kind === "share") await share(item);
       else {
@@ -307,7 +355,7 @@
           (kind !== "like" || unliked(item.button)), () => {
             canReacquire = kind === "like" && buttons(item.scope)
               .filter(node => isAction(node, "like") || matches(node, likedWords)).length === 1;
-            ctrl.recordInteraction(kind);
+            recordAttempt(kind);
           });
         if (kind === "like") {
           // React may replace the button; only follow an unambiguous action on the same post.
@@ -343,7 +391,13 @@
       async maybeInteract(allowed = ["like", "comment", "share", "join"]) {
         if (Date.now() < nextAttempt || !ctrl.canAct(null, null, true)) return false;
         const options = allowed.filter(kind => counts[kind] < limits[kind])
-          .map(kind => ({kind, items: candidates(kind)})).filter(option => option.items.length);
+          .map(kind => {
+            const items = candidates(kind);
+            if (!items.length && ["comment", "share"].includes(kind) && !ctrl.stats.issues?.[kind]) {
+              ctrl.noteInteractionIssue(scanIssues[kind] || "没有可用目标：入口不可见、帖子已处理或未识别", kind);
+            }
+            return {kind, items};
+          }).filter(option => option.items.length);
         if (!options.length) {
           nextAttempt = Date.now() + random(5000, 10000);
           const articles = [...document.querySelectorAll('[role="article"]')];
@@ -356,18 +410,30 @@
           ctrl.noteInteractionIssue(reason);
           return false;
         }
-        nextAttempt = Date.now() + random(60000, 100000);
-        const choice = options[Math.floor(Math.random() * options.length)];
+        nextAttempt = Date.now() + (home ? random(35000, 45000) : random(60000, 100000));
+        let choice;
+        if (home) {
+          for (let offset = 0; offset < homePlan.length; offset++) {
+            const index = (planIndex + offset) % homePlan.length;
+            choice = options.find(option => option.kind === homePlan[index]);
+            if (choice) { planIndex = (index + 1) % homePlan.length; break; }
+          }
+        }
+        choice ||= options[Math.floor(Math.random() * options.length)];
         const item = choice.items[Math.floor(Math.random() * choice.items.length)];
         try {
           const before = ctrl.stats.attempted[choice.kind];
+          const confirmedBefore = ctrl.stats.confirmed[choice.kind];
           const result = await execute(choice.kind, item);
           if (choice.kind !== "join" && ctrl.stats.attempted[choice.kind] === before) {
-            ctrl.noteInteractionIssue("互动未提交：编辑器、分享入口或页面状态不符合条件");
+            if (!ctrl.stats.issues?.[choice.kind]) ctrl.noteInteractionIssue("互动未提交：编辑器、分享入口或页面状态不符合条件", choice.kind);
+          } else if (["comment", "share"].includes(choice.kind) && ctrl.stats.confirmed[choice.kind] === confirmedBefore && !ctrl.stats.issues?.[choice.kind]) {
+            ctrl.noteInteractionIssue("提交未确认，本次不重发", choice.kind);
           }
           return result;
         }
-        catch (error) { if (error.name === "AbortError") throw error; ctrl.noteInteractionIssue("互动中断：" + error.message); return false; }
+        catch (error) { if (error.name === "AbortError") throw error;
+          ctrl.noteInteractionIssue(error.name === "InteractionPaused" ? ctrl.detail : "互动中断：" + error.message, choice.kind); return false; }
         finally { safeCleanup(); }
       }
     };

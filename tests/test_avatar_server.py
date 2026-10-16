@@ -25,7 +25,8 @@ class AvatarServerTest(unittest.TestCase):
         self.dialogs = []
         namespace["messagebox"] = SimpleNamespace(
             showwarning=lambda *args, **kwargs: self.dialogs.append(args),
-            showerror=lambda *args, **kwargs: self.dialogs.append(args))
+            showerror=lambda *args, **kwargs: self.dialogs.append(args),
+            showinfo=lambda *args, **kwargs: self.dialogs.append(args))
         exec(compile(ast.Module(body=[app_class], type_ignores=[]), str(source), "exec"), namespace)
         self.app = namespace["App"].__new__(namespace["App"])
         self.app.avatar_pending = set()
@@ -143,6 +144,30 @@ class AvatarServerTest(unittest.TestCase):
         self.app.set_activity_detail = lambda cid, detail: details.append(detail)
         self.app.show_activity_stats("a", {"issue": "未识别到帖子容器，页面布局可能不兼容"})
         self.assertEqual(details, ["点赞 0 次；评论 0 次；分享 0 次；原因：未识别到帖子容器，页面布局可能不兼容"])
+
+    def test_execution_detail_shows_full_result_as_separate_lines(self):
+        self.app.list_view = SimpleNamespace(exists=lambda cid: cid == "a",
+            set=lambda cid, column: "点赞 3 次；评论 0 次；评论：缺少帖子链接；分享：没有快拍入口")
+        self.app.show_execution_detail("a")
+        self.assertEqual(self.dialogs, [("执行详情", "点赞 3 次\n评论 0 次\n评论：缺少帖子链接\n分享：没有快拍入口")])
+        self.app.show_execution_detail("disconnected")
+        self.assertEqual(len(self.dialogs), 1)
+
+    def test_comment_and_share_reasons_are_visible_even_when_likes_succeed(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {
+            "attempted": {"like": 3}, "confirmed": {"like": 3},
+            "issues": {"comment": "缺少可校验的帖子链接", "share": "没有快拍入口"}})
+        self.assertEqual(details, ["点赞 3 次；评论 0 次；分享 0 次；评论：缺少可校验的帖子链接；分享：没有快拍入口"])
+
+    def test_action_reasons_ignore_invalid_values_and_successful_actions(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {
+            "attempted": {"comment": 1}, "confirmed": {"comment": 1},
+            "issues": {"comment": "Old failure", "share": {"invalid": True}}})
+        self.assertEqual(details, ["点赞 0 次；评论 1 次；分享 0 次"])
 
     def test_stop_message_displays_counts_after_setting_idle(self):
         events = []

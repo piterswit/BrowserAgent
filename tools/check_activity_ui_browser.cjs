@@ -8,16 +8,22 @@ const folder = path.join(__dirname, "../WS Browser Bridge");
 async function checkPopupRecovery(browser) {
   const page = await browser.newPage({viewport: {width: 1000, height: 700}});
   try {
+    await page.context().route("**/*", route => route.abort());
     await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html", body:
       '<!doctype html><style>[role=dialog],[role=alertdialog],[role=menu],dialog{position:fixed;top:80px;left:80px;width:300px;height:180px;background:white}button{padding:10px}</style><main>Feed</main>'}));
     await page.goto("https://www.facebook.com/");
     await page.evaluate(() => {
       window.chrome = {runtime: {sendMessage: async () => {}}};
       window.__fbActivityRequest = {mode: "home", runId: "popup-test"};
+      window.fixtureHidden = true;
+      Object.defineProperty(document, "hidden", {configurable: true, get: () => window.fixtureHidden});
+      document.hasFocus = () => false;
     });
     await page.addScriptTag({content: fs.readFileSync(path.join(folder, "activity_runtime.js"), "utf8")});
     await page.evaluate(() => {
       const ctrl = window.__fbActivityRuntime.create("home");
+      if (ctrl.canAct() || ctrl.state !== "等待中" || !ctrl.run) throw Error("Hidden page did not wait");
+      window.fixtureHidden = false;
       for (const role of ["dialog", "alertdialog", "menu"]) {
         for (const label of ["Close", "关闭", "關閉", "Not now", "取消"]) {
           const popup = document.createElement("div"); popup.setAttribute("role", role);
@@ -43,6 +49,7 @@ async function checkPopupRecovery(browser) {
 async function checkIconControls(browser) {
   const page = await browser.newPage({viewport: {width: 1000, height: 700}});
   try {
+    await page.context().route("**/*", route => route.abort());
     // Preserve the supplied semantic markers; wrappers and state transitions are test scaffolding.
     await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html; charset=utf-8", body: `<!doctype html><meta charset="utf-8">
       <style>[role=button]{display:inline-block;padding:10px}article{padding:20px}[contenteditable]{min-height:40px;border:1px solid} [hidden]{display:none}</style>
@@ -53,8 +60,8 @@ async function checkIconControls(browser) {
       <div id="composer" hidden><div><div><div><div><div><div contenteditable="true" role="textbox" id="editor"></div></div></div></div></div></div>
       <div id="focused-state-composer-submit"><span><div aria-label="Post comment" role="button" tabindex="0"><svg width="16" height="16"></svg></div></span></div></div>
       </article></main>
-      <div id="menu" role="menu" hidden><div role="button">Share to Feed</div><div id="story" role="button"><span>Share to your story (Friends)</span></div><div role="button">Send in Messenger</div></div>
-      <div id="storyComposer" role="dialog" hidden><button id="publish">Share</button></div><div id="notice" role="status"></div>`}));
+      <div id="menu" role="menu" style="position:fixed;top:50px;width:500px;height:950px" hidden><div role="button">Share to Feed</div><div id="story" role="button"><span>Share to your story (Friends)</span></div><div role="button">Send in Messenger</div></div>
+      <div id="storyComposer" role="dialog" style="position:fixed;top:50px;width:500px;height:950px" hidden><button id="publish">Share</button></div><div id="notice" role="status"></div>`}));
     await page.goto("https://www.facebook.com/");
     await page.evaluate(() => {
       window.chrome = {runtime: {sendMessage: async () => {}}};
@@ -109,6 +116,7 @@ async function main() {
     ]) {
       const page = await browser.newPage({viewport: {width: 1000, height: 700}});
       try {
+        await page.context().route("**/*", route => route.abort());
         await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html; charset=utf-8", body: `<!doctype html><meta charset="utf-8">
           <style>body{margin:0;overflow:hidden}main{height:700px;overflow-y:auto}article{padding:20px;height:250px}
           [contenteditable]{min-height:40px;border:1px solid #999}#chat{position:fixed;right:0;bottom:0;width:350px;height:300px;background:white}
@@ -123,12 +131,16 @@ async function main() {
         await page.evaluate(() => {
           window.chrome = {runtime: {sendMessage: async () => {}}};
           window.__fbActivityRequest = {mode: "home", runId: "ui-test"};
+          window.fixtureHidden = false;
+          Object.defineProperty(document, "hidden", {configurable: true, get: () => window.fixtureHidden});
+          document.hasFocus = () => false;
           Math.random = () => 0;
           window.sent = 0; window.notificationClicks = 0;
           document.querySelector("#comment").setAttribute("aria-label", "Open comments for this post");
           document.querySelector("#closeChat").onclick = () => document.querySelector("#chat").remove();
           document.querySelector("#send").onclick = () => {
             if (!window.refuseComment) { window.sent++; document.querySelector("#editor").textContent = ""; }
+            if (window.hideDuringComment) window.fixtureHidden = true;
           };
           document.querySelector("#trigger").onclick = () => {
             const panel = document.querySelector("#notifications");
@@ -143,7 +155,12 @@ async function main() {
         }
         await page.evaluate(async () => {
           const ctrl = window.__fbActivityRuntime.create("home");
-          ctrl.sleep = async () => { ctrl.guard(); await new Promise(resolve => setTimeout(resolve, 5)); ctrl.guard(); };
+          ctrl.sleep = async () => {
+            ctrl.guard(); await new Promise(resolve => setTimeout(resolve, 5)); ctrl.guard();
+            if (window.hideDuringNotifications && document.querySelector("#trigger").getAttribute("aria-expanded") === "true") {
+              window.hideDuringNotifications = false; window.fixtureHidden = true;
+            }
+          };
           const now = Date.now.bind(Date); let offset = 0;
           Date.now = () => now() + offset;
           const interactions = window.__fbActivityInteractions(ctrl);
@@ -156,15 +173,25 @@ async function main() {
           if (!await interactions.maybeNotifications()) throw Error("Notifications did not open");
           const panel = document.querySelector("#notifications");
           if (!panel.hidden || window.notificationScrollTop < 100 || window.notificationClicks !== 2) throw Error("Notification scroll/close failed");
+          const interrupted = window.__fbActivityInteractions(ctrl);
+          offset += 45000; window.hideDuringNotifications = true;
+          if (await interrupted.maybeNotifications()) throw Error("Hidden notification browsing did not yield");
+          if (panel.hidden || ctrl.state !== "等待中") throw Error("Notification panel changed while hidden");
+          interrupted.maintainPage();
+          if (window.notificationClicks !== 3) throw Error("Notification cleanup clicked while hidden");
+          window.fixtureHidden = false; interrupted.maintainPage();
+          if (!panel.hidden || window.notificationClicks !== 4) throw Error("Notification cleanup did not resume");
           window.__fbInteractionHistory.clear();
           const failed = window.__fbActivityInteractions(ctrl);
-          window.refuseComment = true; offset += 31000;
+          window.refuseComment = true; window.hideDuringComment = true; offset += 31000;
           if (await failed.maybeInteract(["comment"])) throw Error("Unconfirmed comment reported as success");
+          if (!document.querySelector("#editor").textContent || ctrl.state !== "等待中") throw Error("Hidden comment draft was not deferred");
+          window.fixtureHidden = false; failed.maintainPage();
           if (document.querySelector("#editor").textContent || !ctrl.canAct()) throw Error("Failed comment stranded the page");
           if (window.sent !== 1) throw Error("Duplicate comment submission");
           window.__fbActivityRuntime.stop();
         });
-        console.log(`${labels.comment}: explicit send, failed-draft recovery, chat close and notification scroll/close passed`);
+        console.log(`${labels.comment}: explicit send, hidden/visible draft and notification recovery, chat close passed`);
       } finally { await page.close(); }
     }
   } finally { await browser.close(); }

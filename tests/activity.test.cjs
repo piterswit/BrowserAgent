@@ -75,7 +75,7 @@ test("duplicate injection does not create a second loop", async () => {
   assert.equal(p.clock.jobs.size, 2);
 });
 test("hidden pages, focused editors and recent user input suspend scrolling", async () => {
-  const p = page(); p.inject(); p.document.hidden = true;
+  const p = page("group"); p.inject(); p.document.hidden = true;
   await p.clock.advance(20000); assert.equal(p.moves.length, 0);
   p.document.hidden = false; p.document.activeElement = {matches: () => true, innerText: "User draft"};
   await p.clock.advance(20000); assert.equal(p.moves.length, 0);
@@ -180,7 +180,7 @@ test("an active interaction scope is not closed by generic recovery", () => {
 });
 
 test("recent user input, hidden tabs and Stop prevent automatic popup dismissal", () => {
-  const p = page(); p.inject(); const fixture = popupFixture(p), ctrl = p.window.__fbActivityCtrl;
+  const p = page("group"); p.inject(); const fixture = popupFixture(p), ctrl = p.window.__fbActivityCtrl;
   p.document.hidden = true; assert.equal(ctrl.canAct(), false);
   p.document.hidden = false; ctrl.lastInput = 20000; assert.equal(ctrl.canAct(), false);
   ctrl.lastInput = 0; ctrl.stop(); assert.equal(ctrl.canAct(), false);
@@ -199,17 +199,107 @@ test("a missing interaction module stops with an error instead of leaving a fake
   assert.match(p.window.__fbActivityLastError, /滚动失败/);
   assert.ok(p.messages[0].error);
 });
-test("an empty autofocused input does not block browsing but still blocks interactions", async () => {
-  const p = page(); p.document.activeElement = {matches: () => true, value: ""};
-  p.inject(); await p.clock.advance(4000);
-  assert.ok(p.moves.length);
-  assert.equal(p.window.__fbActivityCtrl.canAct(null, null, true), false);
+for (const mode of ["home", "group", "custom", "reels"]) {
+  test(`${mode}: empty autofocus only blocks interactions outside unattended home`, async () => {
+    const p = page(mode); p.document.activeElement = {matches: () => true, value: "", isContentEditable: false};
+    p.inject(); await p.clock.advance(4000);
+    assert.ok(p.moves.length);
+    assert.equal(p.window.__fbActivityCtrl.canAct(null, null, true), mode === "home");
+    p.window.__fbActivityRuntime.stop();
+  });
+}
+
+test("home waits while hidden, then resumes unfocused without a recent-input delay", async () => {
+  const p = page(); p.document.hidden = true; p.document.hasFocus = () => false;
+  p.document.activeElement = {matches: () => true, innerText: "", isContentEditable: true};
+  p.inject(); const ctrl = p.window.__fbActivityCtrl;
+  ctrl.lastInput = 20000;
+  assert.equal(p.listeners.size, 0);
+  assert.equal(ctrl.canAct(null, null, true), false);
+  assert.equal(ctrl.state, "等待中"); assert.equal(ctrl.run, true);
+  await p.clock.advance(20000); assert.equal(p.moves.length, 0);
+  p.document.hidden = false;
+  assert.equal(ctrl.canAct(null, null, true), true);
+  await p.clock.advance(10000); assert.ok(p.moves.length);
+  const count = p.moves.length; ctrl.stop(); await p.clock.advance(20000);
+  assert.equal(p.moves.length, count); assert.equal(p.clock.jobs.size, 0);
+});
+
+test("home defers popup closing until visible and still preserves existing input drafts", () => {
+  const p = page(); p.inject(); const ctrl = p.window.__fbActivityCtrl;
+  p.document.hidden = true; ctrl.lastInput = 20000;
+  const fixture = popupFixture(p);
+  assert.equal(ctrl.canAct(), false); assert.equal(fixture.clicks(), 0);
+  assert.equal(ctrl.state, "等待中");
+  p.document.hidden = false;
+  assert.equal(ctrl.canAct(), true); assert.equal(fixture.clicks(), 1);
+  p.document.activeElement = {matches: () => true, value: "Existing draft"};
+  assert.equal(ctrl.canAct(), false); assert.match(ctrl.detail, /未提交/);
+  ctrl.stop();
+});
+
+test("Stop while waiting prevents resumption when the page becomes visible", async () => {
+  const p = page(); p.document.hidden = true; p.inject();
+  await p.clock.advance(10000); assert.equal(p.moves.length, 0);
+  p.window.__fbActivityRuntime.stop(); p.document.hidden = false;
+  await p.clock.advance(30000);
+  assert.equal(p.moves.length, 0); assert.equal(p.clock.jobs.size, 0);
+});
+
+test("a hidden task still expires after five minutes without restarting on visibility", async () => {
+  const p = page(); p.document.hidden = true; p.inject();
+  await p.clock.advance(300001);
+  assert.equal(p.window.__fbActivityCtrl, null); assert.equal(p.messages.length, 1);
+  p.document.hidden = false; await p.clock.advance(30000);
+  assert.equal(p.moves.length, 0); assert.equal(p.clock.jobs.size, 0);
+});
+
+test("navigation is validated before the maintenance phase can close a popup", async () => {
+  const p = page(); p.inject(); const fixture = popupFixture(p);
+  p.context.location.pathname = "/different-page/";
+  await p.clock.advance(4000);
+  assert.equal(fixture.clicks(), 0); assert.equal(p.moves.length, 0);
+  assert.equal(p.window.__fbActivityCtrl, null); assert.equal(p.messages.length, 1);
+});
+
+test("page loading defers maintenance and scrolling until the document is ready", async () => {
+  const p = page(); p.document.readyState = "loading"; p.inject();
+  const fixture = popupFixture(p);
+  await p.clock.advance(10000);
+  assert.equal(fixture.clicks(), 0); assert.equal(p.moves.length, 0);
+  assert.equal(p.window.__fbActivityCtrl.state, "等待中");
+  p.document.readyState = "complete"; await p.clock.advance(10000);
+  assert.equal(fixture.clicks(), 1); assert.ok(p.moves.length);
+  p.window.__fbActivityRuntime.stop();
+});
+
+test("a replaced scroll container is abandoned before the next frame", async () => {
+  const p = page(), ctrl = p.window.__fbActivityRuntime.create("home");
+  const moves = [], target = {isConnected: true, scrollTop: 0,
+    scrollBy(value) { moves.push(value.top); this.scrollTop += value.top; }};
+  const first = ctrl.scroll(target, 100, "y", 4);
+  target.isConnected = false; await p.clock.advance(1000); await first;
+  assert.equal(moves.length, 1); assert.equal(ctrl.state, "等待中");
+  assert.match(ctrl.detail, /重新定位/);
+  ctrl.stop(); assert.equal(p.clock.jobs.size, 0);
 });
 test("session expiry stops without reload and releases listeners and timers", async () => {
   const p = page(); p.inject(); await p.clock.advance(300001);
   assert.equal(p.clock.jobs.size, 0); assert.equal(p.listeners.size, 0);
   assert.equal(p.messages[0].runId, "run-1");
 });
+
+for (const method of ["guard", "canAct"]) {
+  test(`home ${method} checks elapsed wall time even before a delayed expiry timer fires`, () => {
+    const p = page(); p.inject(); const ctrl = p.window.__fbActivityCtrl;
+    p.clock.Date.now = () => 320001;
+    if (method === "guard") assert.throws(() => ctrl.guard(), {name: "AbortError"});
+    else assert.equal(ctrl.canAct(), false);
+    assert.equal(ctrl.run, false);
+    assert.equal(p.messages.length, 1);
+    assert.equal(p.clock.jobs.size, 0);
+  });
+}
 test("manual navigation ends the current browsing session", async () => {
   const p = page(); p.inject();
   vm.runInContext("location.pathname = '/friends/'", p.context);
@@ -439,6 +529,13 @@ test("natural completion forwards final stats only from the active task tab", as
   b.runtimeMessages[0]({cmd: "fb_bridge_active_stopped", runId: run.runId, stats}, {tab: {id: 1}});
   assert.equal(b.messages.at(-1).status, "stop");
   assert.deepEqual(b.messages.at(-1).stats, stats);
+});
+
+test("per-action diagnostics are sanitized and retained by the background", async () => {
+  const b = background(); await flush();
+  b.context.inputStats = {issues: {comment: "x".repeat(250), share: "No story entry", unknown: "Ignored"}};
+  const result = JSON.parse(vm.runInContext("JSON.stringify(normalizeActivityStats(inputStats))", b.context));
+  assert.deepEqual(result.issues, {comment: "x".repeat(160), share: "No story entry"});
 });
 
 test("manual stop uses final page snapshot and never reloads a modern controller", async () => {

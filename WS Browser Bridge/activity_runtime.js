@@ -1,5 +1,5 @@
 (() => {
-  const version = 6;
+  const version = 9;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -36,11 +36,26 @@
       const dismissals = new WeakMap();
       const path = location.pathname;
       const ctrl = {
-        run: true, started: false, runId: request.runId, mode, lastInput: 0, state: "启动中", detail: "",
+        run: true, started: false, runId: request.runId, mode, unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
+        deadline: mode === "reels" ? null : Date.now() + 5 * 60 * 1000,
+        sessionActive() {
+          if (!this.run) return false;
+          const sameViewer = mode === "reels" && /^\/reels?(\/|$)/.test(location.pathname);
+          if (this.deadline !== null && Date.now() >= this.deadline || location.pathname !== path && !sameViewer) this.stop(true);
+          return this.run;
+        },
+        pageAvailable() { return this.sessionActive() && !document.hidden && document.readyState !== "loading"; },
+        recentUserInput() { return !this.unattended && Date.now() - this.lastInput < 10000; },
+        userInputChanged(since) { return !this.unattended && this.lastInput !== since; },
         stats: JSON.parse(JSON.stringify(request.stats || {attempted: {like: 0, comment: 0, share: 0}, confirmed: {like: 0, comment: 0, share: 0}})),
         snapshotStats() { return JSON.parse(JSON.stringify(this.stats)); },
-        noteInteractionIssue(reason) {
-          if (!this.run || this.stats.issue === reason) return;
+        noteInteractionIssue(reason, kind = null) {
+          if (!this.run) return;
+          if (["like", "comment", "share"].includes(kind)) {
+            this.stats.issues ||= {};
+            if (this.stats.issues[kind] === reason) return;
+            this.stats.issues[kind] = reason;
+          } else if (this.stats.issue === reason) return;
           this.stats.issue = reason;
           try {
             chrome.runtime.sendMessage({cmd: "fb_bridge_activity_stats", runId: this.runId, stats: this.snapshotStats()})?.catch(() => {});
@@ -51,15 +66,18 @@
           const values = this.stats[confirmed ? "confirmed" : "attempted"];
           values[kind]++;
           this.stats.issue = "";
+          if (this.stats.issues) delete this.stats.issues[kind];
           try {
             chrome.runtime.sendMessage({cmd: "fb_bridge_activity_stats", runId: this.runId, stats: this.snapshotStats()})?.catch(() => {});
           } catch {}
         },
-        guard() { if (!this.run) throw abort(); },
+        guard() {
+          if (!this.sessionActive()) throw abort();
+        },
         report(detail, error = false) {
           if (this.detail === detail) return;
           this.detail = detail;
-          this.state = error ? "执行失败" : detail.startsWith("暂停") ? "暂停" : "运行中";
+          this.state = error ? "执行失败" : detail.startsWith("暂停") ? "暂停" : detail.startsWith("等待：") ? "等待中" : "运行中";
           if (error) window.__fbActivityLastError = detail;
           try {
             chrome.runtime.sendMessage({cmd: "fb_bridge_activity_detail", runId: this.runId, detail, error})?.catch(() => {});
@@ -126,22 +144,22 @@
           return {blocked, closing};
         },
         canAct(scope = null, editor = null, interacting = false) {
-          if (!this.run) return false;
-          const sameViewer = mode === "reels" && /^\/reels?(\/|$)/.test(location.pathname);
-          if (location.pathname !== path && !sameViewer) { this.stop(true); return false; }
+          if (!this.sessionActive()) return false;
           const focused = document.activeElement;
           let reason = "";
-          if (document.hidden) reason = "暂停：目标标签页不在前台";
-          else if (Date.now() - this.lastInput < 10000) reason = "暂停：等待用户操作结束";
+          if (document.hidden) reason = "等待：目标页面不可见，恢复可见后继续";
+          else if (document.readyState === "loading") reason = "等待：页面加载完成后继续";
+          else if (this.recentUserInput()) reason = "暂停：等待用户操作结束";
           else {
             const result = this.dismissOverlays(scope);
             if (result.blocked) reason = result.blocked;
             else if (result.closing) { this.report("正在关闭页面弹框，随后继续浏览"); return false; }
             else if (focused?.matches('input, textarea, [contenteditable="true"]') && focused !== editor && visible(focused) &&
-              (interacting || focused.isContentEditable || (focused.value || focused.innerText || "").trim())) reason = "暂停：用户正在输入";
+              (!this.unattended && (interacting || focused.isContentEditable) ||
+                (focused.value || focused.innerText || "").trim())) reason = "暂停：页面存在未提交的输入内容";
           }
           if (reason) { this.report(reason); this.noteInteractionIssue(reason); }
-          else if (this.state === "暂停") this.report("正在浏览");
+          else if (["暂停", "等待中"].includes(this.state)) this.report("正在浏览");
           return !reason;
         },
         scrollTarget() {
@@ -177,6 +195,9 @@
           for (let i = 0; i < steps; i++) {
             this.guard();
             if (!this.canAct()) return;
+            if (element !== window && !visible(element)) {
+              this.report("等待：滚动区域已更新，重新定位"); return;
+            }
             const progress = (i + 1) / steps;
             const eased = progress < 0.5 ? 2 * progress * progress : 1 - ((-2 * progress + 2) ** 2) / 2;
             element.scrollBy({[axis === "x" ? "left" : "top"]: amount * (eased - previous), behavior: "instant"});
@@ -210,7 +231,7 @@
           }
         }
       };
-      for (const name of ["pointerdown", "wheel", "keydown", "touchstart"]) {
+      for (const name of mode === "home" ? [] : ["pointerdown", "wheel", "keydown", "touchstart"]) {
         const listener = event => { if (event.isTrusted) ctrl.lastInput = Date.now(); };
         window.addEventListener(name, listener, {capture: true, passive: true});
         listeners.push([name, listener]);

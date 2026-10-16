@@ -6,7 +6,7 @@ const {test} = require("node:test");
 const folder = path.join(__dirname, "../WS Browser Bridge");
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
-function setup(kind) {
+function setup(kind, mode = "home") {
   let now = 20000, next = 0;
   const jobs = new Map(), clicks = [], keys = [];
   const clock = {
@@ -61,7 +61,7 @@ function setup(kind) {
   const anchor = article.add(new Node("anchor"));
   anchor.href = kind === "join" ? "https://www.facebook.com/groups/testgroup/" : "https://www.facebook.com/alice/posts/123";
   const button = article.add(new Node("button", {like: "Like", comment: "Comment", share: "Share", join: "Join group"}[kind]));
-  const window = {__fbActivityRequest: {mode: "home", runId: "run-1"}, addEventListener() {}, removeEventListener() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})};
+  const window = {__fbActivityRequest: {mode, runId: "run-1"}, addEventListener() {}, removeEventListener() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})};
   const context = vm.createContext({...clock, Date: {now: () => now}, Math: {random: () => 0, floor: Math.floor},
     window, document, location: {pathname: "/", href: "https://www.facebook.com/"}, innerHeight: 700, innerWidth: 1000, URL,
     getComputedStyle: node => ({position: "fixed", overflowY: node.scrollable ? "auto" : "visible"}),
@@ -71,10 +71,10 @@ function setup(kind) {
   for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
     vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), context);
   }
-  const ctrl = window.__fbActivityRuntime.create("home");
+  const ctrl = window.__fbActivityRuntime.create(mode);
   const interactions = window.__fbActivityInteractions(ctrl);
   const start = async () => { await clock.advance(45000); return {promise: interactions.maybeInteract([kind])}; };
-  return {clock, jobs, clicks, keys, Node, article, anchor, button, window, document, ctrl, interactions, start};
+  return {clock, jobs, clicks, keys, Node, article, anchor, button, window, document, location: context.location, ctrl, interactions, start};
 }
 test("likes have a cooldown, a budget and stable-post deduplication", async () => {
   const p = setup("like"), {promise} = await p.start();
@@ -112,7 +112,7 @@ test("the per-session like budget applies even to different posts", async () => 
 
 test("updated feed budgets and shorter cooldown allow three distinct likes", async () => {
   const p = setup("like");
-  assert.deepEqual({...p.interactions.limits}, {like: 3, comment: 2, share: 2, join: 1});
+  assert.deepEqual({...p.interactions.limits}, {like: 3, comment: 2, share: 1, join: 1});
   for (let i = 0; i < 3; i++) {
     p.anchor.href = `https://www.facebook.com/alice/posts/${i}`;
     if (i) { p.button.isConnected = false; p.button = p.article.add(new p.Node("button", "Like")); }
@@ -125,6 +125,49 @@ test("updated feed budgets and shorter cooldown allow three distinct likes", asy
   assert.equal(await p.interactions.maybeInteract(["like"]), false);
   assert.equal(p.clicks.length, 3);
 });
+
+test("home distributes six eligible interactions as three likes, two comments and one share within five minutes", async () => {
+  const p = setup("like"), order = [];
+  const menu = new p.Node("menu"), composer = new p.Node("dialog");
+  const story = menu.add(new p.Node("button", "Share to your story (Friends)"));
+  const publish = composer.add(new p.Node("button", "Share"));
+  story.onclick = () => { p.document.overlays = [composer]; };
+  publish.onclick = () => {
+    p.document.overlays = [];
+    p.document.alerts.push(new p.Node("alert", "Your story was shared"));
+  };
+  let previous = [];
+  for (let i = 0; i < 6; i++) {
+    for (const node of previous) node.isConnected = false;
+    p.button.isConnected = false;
+    p.anchor.href = `https://www.facebook.com/alice/posts/test-${i}`;
+    const like = p.article.add(new p.Node("button", "Like"));
+    const comment = p.article.add(new p.Node("button", "Comment"));
+    const share = p.article.add(new p.Node("button", "Share"));
+    const editor = p.article.add(new p.Node("editor"));
+    previous = [like, comment, share, editor];
+    like.onclick = () => { order.push("like"); like.attributes["aria-pressed"] = "true"; };
+    comment.onclick = () => order.push("comment");
+    share.onclick = () => { order.push("share"); p.document.overlays = [menu]; };
+    await p.clock.advance(25000);
+    const attempt = p.interactions.maybeInteract();
+    await p.clock.advance(10000); await attempt;
+  }
+  assert.deepEqual(order, ["like", "comment", "like", "share", "comment", "like"]);
+  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 3, comment: 2, share: 1});
+  assert.equal(p.ctrl.run, true);
+  await p.clock.advance(45000);
+  assert.equal(await p.interactions.maybeInteract(), false);
+  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 3, comment: 2, share: 1});
+});
+
+for (const mode of ["group", "custom", "reels"]) {
+  test(`${mode}: home quotas do not change other mode limits`, () => {
+    const p = setup("like", mode);
+    assert.equal(p.interactions.limits.share, 2);
+    assert.equal(p.interactions.limits.like, mode === "reels" ? 2 : 3);
+  });
+}
 
 for (const label of ["Post comment", "发表评论", "發佈留言"]) {
   test(`${label}: explicit submit button is clicked once, without Enter`, async () => {
@@ -163,6 +206,58 @@ test("like telemetry separates confirmed state changes from uncertain clicks", a
     assert.equal(p.ctrl.stats.confirmed.like, Number(confirmed));
   }
 });
+
+for (const mode of ["home", "group", "custom", "reels"]) {
+  test(`${mode}: hidden-page interaction policy is consistent with runtime`, async () => {
+    const p = setup("like", mode); p.document.hidden = true;
+    p.button.onclick = () => { p.button.attributes["aria-pressed"] = "true"; };
+    const {promise} = await p.start(); await p.clock.advance(4000);
+    assert.equal(await promise, false);
+    assert.equal(p.ctrl.stats.confirmed.like, 0);
+    assert.equal(p.ctrl.state, "等待中");
+    p.document.hidden = false; await p.clock.advance(5000);
+    const resumed = p.interactions.maybeInteract(["like"]);
+    await p.clock.advance(4000); assert.equal(await resumed, true);
+    assert.equal(p.ctrl.stats.confirmed.like, 1);
+  });
+}
+
+test("home defers exact-draft cleanup until visibility returns without resubmission", async () => {
+  const p = setup("comment"), editor = p.article.add(new p.Node("editor"));
+  editor.isContentEditable = true;
+  editor.dispatchEvent = event => {
+    if (event.type === "keydown") { p.document.hidden = true; p.ctrl.lastInput = 70000; }
+  };
+  const {promise} = await p.start(); await p.clock.advance(15000);
+  assert.equal(await promise, false);
+  assert.equal(editor.innerText, "Thanks for sharing!");
+  assert.equal(p.ctrl.state, "等待中");
+  p.interactions.maintainPage(); assert.equal(editor.innerText, "Thanks for sharing!");
+  p.document.hidden = false; p.interactions.maintainPage();
+  assert.equal(editor.innerText, "");
+  assert.equal(p.document.activeElement, null);
+  assert.equal(p.ctrl.canAct(), true);
+  assert.equal(p.ctrl.stats.attempted.comment, 1);
+  assert.equal(p.ctrl.stats.confirmed.comment, 0);
+});
+
+for (const interruptedBy of ["edit", "stop", "navigation", "expiry"]) {
+  test(`deferred draft cleanup preserves content after ${interruptedBy}`, async () => {
+    const p = setup("comment"), editor = p.article.add(new p.Node("editor"));
+    editor.isContentEditable = true;
+    editor.dispatchEvent = event => { p.keys.push(event.type); if (event.type === "keydown") p.document.hidden = true; };
+    const {promise} = await p.start(); await p.clock.advance(15000);
+    assert.equal(await promise, false);
+    if (interruptedBy === "edit") editor.innerText = "An edited draft";
+    else if (interruptedBy === "stop") p.ctrl.stop();
+    else if (interruptedBy === "navigation") p.location.pathname = "/different/";
+    else p.ctrl.deadline = 0;
+    p.document.hidden = false; p.interactions.maintainPage();
+    assert.equal(editor.innerText, interruptedBy === "edit" ? "An edited draft" : "Thanks for sharing!");
+    assert.equal(p.ctrl.stats.attempted.comment, 1);
+    assert.equal(p.keys.filter(type => type === "keydown").length, 1);
+  });
+}
 
 test("a delayed like state is confirmed without a second click", async () => {
   const p = setup("like");
@@ -360,6 +455,86 @@ test("share telemetry requires a new success notice, not an old one", async () =
   }
 });
 
+test("missing comment editor does not spend the submit budget for a different post", async () => {
+  const p = setup("comment");
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  assert.equal(await promise, false);
+  assert.equal(p.interactions.counts.comment, 0);
+  assert.match(p.ctrl.stats.issues.comment, /未找到可见的评论框/);
+  p.anchor.href = "https://www.facebook.com/alice/posts/other";
+  p.button.isConnected = false;
+  p.article.add(new p.Node("button", "Comment"));
+  p.article.add(new p.Node("editor"));
+  await p.clock.advance(45000);
+  const next = p.interactions.maybeInteract(["comment"]);
+  await p.clock.advance(10000); assert.equal(await next, true);
+  assert.equal(p.interactions.counts.comment, 1);
+  assert.equal(p.ctrl.stats.confirmed.comment, 1);
+  assert.equal(p.ctrl.stats.issues.comment, undefined);
+});
+
+test("a comment dialog taller than the viewport is accepted when its editor is visible", async () => {
+  const p = setup("comment"), dialog = new p.Node("dialog");
+  dialog.getBoundingClientRect = () => ({width: 500, height: 1200, top: 0, bottom: 1200});
+  dialog.add(new p.Node("editor"));
+  p.button.onclick = () => { p.document.overlays = [dialog]; };
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  assert.equal(await promise, true);
+  assert.equal(p.ctrl.stats.confirmed.comment, 1);
+});
+
+test("missing post identity is reported for comment and share even if a like succeeds", async () => {
+  const p = setup("like"); p.anchor.href = "https://www.facebook.com/alice/";
+  p.article.add(new p.Node("button", "Comment")); p.article.add(new p.Node("button", "Share"));
+  p.button.onclick = () => { p.button.attributes["aria-pressed"] = "true"; };
+  await p.clock.advance(25000); const attempt = p.interactions.maybeInteract();
+  await p.clock.advance(4000); await attempt;
+  assert.equal(p.ctrl.stats.confirmed.like, 1);
+  assert.match(p.ctrl.stats.issues.comment, /帖子链接/);
+  assert.match(p.ctrl.stats.issues.share, /帖子链接/);
+});
+
+test("one-click story sharing is confirmed once without requiring a composer", async () => {
+  const p = setup("share"), menu = new p.Node("menu");
+  const option = menu.add(new p.Node("button", "Share to your story (Friends)"));
+  p.button.onclick = () => { p.document.overlays = [menu]; };
+  option.onclick = () => {
+    p.document.overlays = [];
+    p.document.alerts.push(new p.Node("alert", "Your story was shared"));
+  };
+  const {promise} = await p.start(); await p.clock.advance(10000); await promise;
+  assert.deepEqual(p.clicks, ["Share", "Share to your story (Friends)"]);
+  assert.equal(p.interactions.counts.share, 1);
+  assert.equal(p.ctrl.stats.attempted.share, 1);
+  assert.equal(p.ctrl.stats.confirmed.share, 1);
+});
+
+test("story selection without confirmation stays uncertain and is never submitted again", async () => {
+  const p = setup("share"), menu = new p.Node("menu");
+  const option = menu.add(new p.Node("button", "Share to your story (Friends)"));
+  p.button.onclick = () => { p.document.overlays = [menu]; };
+  option.onclick = () => { p.document.overlays = []; };
+  const {promise} = await p.start(); await p.clock.advance(10000); await promise;
+  assert.equal(p.ctrl.stats.attempted.share, 1); assert.equal(p.ctrl.stats.confirmed.share, 0);
+  assert.match(p.ctrl.stats.issues.share, /未收到成功提示/);
+  await p.clock.advance(45000); assert.equal(await p.interactions.maybeInteract(["share"]), false);
+  assert.equal(p.clicks.length, 2);
+});
+
+test("a changed story composer can reuse the original dialog", async () => {
+  const p = setup("share"), menu = new p.Node("dialog", "Choose destination");
+  const option = menu.add(new p.Node("button", "Share to your story"));
+  p.button.onclick = () => { p.document.overlays = [menu]; };
+  option.onclick = () => {
+    option.isConnected = false; menu.innerText = "Story preview";
+    const publish = menu.add(new p.Node("button", "Share"));
+    publish.onclick = () => { p.document.alerts.push(new p.Node("alert", "Your story was shared")); };
+  };
+  const {promise} = await p.start(); await p.clock.advance(10000); await promise;
+  assert.deepEqual(p.clicks, ["Share", "Share to your story", "Share"]);
+  assert.equal(p.ctrl.stats.confirmed.share, 1); assert.equal(p.ctrl.stats.attempted.share, 1);
+});
+
 test("stopping snapshots telemetry and later callbacks cannot add confirmations", async () => {
   const p = setup("like");
   p.ctrl.recordInteraction("like");
@@ -376,9 +551,10 @@ test("an unrelated dialog during comment submission does not strand our draft", 
   editor.dispatchEvent = event => { if (event.type === "keydown") p.document.overlays.push(new p.Node("dialog", "User settings")); };
   const {promise} = await p.start(); await p.clock.advance(15000);
   assert.equal(await promise, false);
-  assert.equal(editor.innerText, "");
+  assert.equal(editor.innerText, "Thanks for sharing!");
   assert.equal(p.document.overlays.length, 1);
   p.document.overlays = [];
+  p.interactions.maintainPage(); assert.equal(editor.innerText, "");
   assert.equal(p.ctrl.canAct(), true);
 });
 
@@ -422,7 +598,7 @@ for (const closeLabel of ["Close chat", "关闭聊天", "關閉聊天室"]) {
   });
 }
 
-test("chat drafts and recent manual interaction are not discarded", () => {
+test("home preserves chat drafts but ignores recent input when closing an empty chat", () => {
   const p = setup("like"), chat = new p.Node("dialog");
   const editor = chat.add(new p.Node("editor", "My chat draft"));
   const close = chat.add(new p.Node("button", "Close chat"));
@@ -431,7 +607,7 @@ test("chat drafts and recent manual interaction are not discarded", () => {
   p.interactions.maintainPage();
   assert.equal(p.clicks.length, 0); assert.equal(editor.innerText, "My chat draft");
   editor.innerText = ""; p.ctrl.lastInput = 20000;
-  p.interactions.maintainPage(); assert.equal(p.clicks.length, 0);
+  p.interactions.maintainPage(); assert.deepEqual(p.clicks, ["Close chat"]);
 });
 
 for (const label of ["Notifications", "通知", "通知訊息"]) {

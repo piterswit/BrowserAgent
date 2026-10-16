@@ -316,6 +316,8 @@ class App:
         menu = self.account_menu
         menu.delete(0, "end")
         menu.add_command(label="定位浏览器", command=lambda: self.locate_browser(client_id))
+        menu.add_separator()
+        menu.add_command(label="查看执行详情", command=lambda: self.show_execution_detail(client_id))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -564,6 +566,12 @@ class App:
         if self.list_view.exists(client_id):
             self.list_view.set(client_id, "detail", detail)
 
+    def show_execution_detail(self, client_id):
+        if not self.list_view.exists(client_id):
+            return
+        detail = str(self.list_view.set(client_id, "detail") or "暂无执行结果")
+        messagebox.showinfo("执行详情", detail.replace("；", "\n"), parent=self.root)
+
     def show_activity_stats(self, client_id, stats, prefix=""):
         def count(group, kind):
             values = stats.get(group)
@@ -579,7 +587,16 @@ class App:
         detail = "；".join(results)
         if uncertain:
             detail += "（未确认：" + "、".join(uncertain) + "）"
-        if not any(count("attempted", kind) for kind in ("like", "comment", "share")):
+        issues = stats.get("issues")
+        reasons = []
+        if isinstance(issues, dict):
+            for kind, label in (("comment", "评论"), ("share", "分享")):
+                issue = issues.get(kind)
+                if min(count("confirmed", kind), count("attempted", kind)) == 0 and isinstance(issue, str) and issue:
+                    reasons.append(f"{label}：{issue[:160]}")
+        if reasons:
+            detail += "；" + "；".join(reasons)
+        elif not any(count("attempted", kind) for kind in ("like", "comment", "share")):
             issue = stats.get("issue")
             if isinstance(issue, str) and issue:
                 detail += "；原因：" + issue[:160]

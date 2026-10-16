@@ -458,6 +458,10 @@ function normalizeActivityStats(stats) {
     const confirmed = stats?.confirmed?.[kind];
     result.attempted[kind] = Number.isSafeInteger(attempted) && attempted >= 0 ? Math.min(attempted, 100000) : 0;
     result.confirmed[kind] = Number.isSafeInteger(confirmed) && confirmed >= 0 ? Math.min(confirmed, result.attempted[kind]) : 0;
+    if (typeof stats?.issues?.[kind] === "string" && stats.issues[kind]) {
+      result.issues ||= {};
+      result.issues[kind] = stats.issues[kind].slice(0, 160);
+    }
   }
   if (typeof stats?.issue === "string" && stats.issue) result.issue = stats.issue.slice(0, 160);
   return result;

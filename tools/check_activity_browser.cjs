@@ -28,21 +28,36 @@ async function main() {
     for (const mode of ["home", "group", "custom", "reels"]) {
       const page = await browser.newPage({viewport: {width: 1000, height: 700}});
       try {
+        await page.context().route("**/*", route => route.abort());
         await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html", body: html(true)}));
         await page.goto("https://www.facebook.com" + (mode === "reels" ? "/reel/123" : "/"));
+        if (mode === "home") await page.evaluate(() => {
+          // Simulate the visibility signal from an occluded window without changing browser settings.
+          window.fixtureHidden = true;
+          Object.defineProperty(document, "hidden", {configurable: true, get: () => window.fixtureHidden});
+          document.hasFocus = () => false;
+        });
         await inject(page, mode);
         assert.equal(await page.evaluate(() => window.__fbActivityCtrl.started), true);
+        if (mode === "home") {
+          await page.waitForTimeout(1600);
+          assert.equal(await page.locator("main").evaluate(node => node.scrollTop), 0);
+          assert.equal(await page.evaluate(() => window.__fbActivityCtrl.state), "等待中");
+          await page.evaluate(() => { window.fixtureHidden = false; });
+        }
         await page.waitForFunction(() => document.querySelector("main").scrollTop > 100, null, {timeout: 22000});
         await page.evaluate(() => window.__fbActivityRuntime.stop());
         const stopped = await page.locator("main").evaluate(node => node.scrollTop);
         await page.waitForTimeout(1500);
         assert.equal(await page.locator("main").evaluate(node => node.scrollTop), stopped);
-        console.log(mode + ": real nested-container scrolling and stop passed (" + stopped + "px)");
+        console.log(mode + ": real nested-container scrolling and stop passed (" + stopped + "px)" +
+          (mode === "home" ? " after simulated hidden/visible recovery" : ""));
       } finally { await page.close(); }
     }
     for (const control of [false, true]) {
       const page = await browser.newPage({viewport: {width: 1000, height: 700}});
       try {
+        await page.context().route("**/*", route => route.abort());
         await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html", body: `<!doctype html>
           <style>body{margin:0;overflow:hidden}main{display:flex;width:100vw;height:100vh;overflow-x:auto;scroll-snap-type:x mandatory}
           section{min-width:100vw;scroll-snap-align:start}video{width:400px;height:500px;margin:50px 200px}
@@ -62,6 +77,7 @@ async function main() {
     }
     const page = await browser.newPage({viewport: {width: 1000, height: 700}});
     try {
+      await page.context().route("**/*", route => route.abort());
       await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html", body: html(false)}));
       await page.goto("https://www.facebook.com/"); await inject(page, "home");
       await page.waitForFunction(() => window.scrollY > 100, null, {timeout: 6000});
