@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/cancel_friend_requests.js"), "utf8");
 
-async function run({sent, cancel, blocked = "", ariaOnly = false, hiddenWarning = false}) {
+async function run({sent, cancel, blocked = "", ariaOnly = false, hiddenWarning = false, stopAfterEntry = false}) {
   const clicks = [], alerts = [];
   let open = false, connected = true;
   const element = text => ({
@@ -20,7 +20,8 @@ async function run({sent, cancel, blocked = "", ariaOnly = false, hiddenWarning 
     querySelectorAll: () => connected ? [cancelButton, unrelated] : [unrelated]};
   const warning = element(blocked);
   if (hiddenWarning) warning.getBoundingClientRect = () => ({width: 0, height: 0});
-  const entry = {...element(sent), click() { clicks.push(sent); open = true; }};
+  const entry = {...element(sent), click() { clicks.push(sent); open = true;
+    if (stopAfterEntry) context.window.__fbCancelRequestsCtrl.stop(); }};
   const body = {appendChild() {}, contains: node => node === cancelButton && connected};
   const context = vm.createContext({
     location: {pathname: "/friends/requests"},
@@ -31,6 +32,7 @@ async function run({sent, cancel, blocked = "", ariaOnly = false, hiddenWarning 
       return [entry];
     }},
     setTimeout: callback => { queueMicrotask(callback); return 1; },
+    clearTimeout() {},
     console: {log() {}, warn() {}, error() {}}, alert: text => alerts.push(text)
   });
   await vm.runInContext(source, context);
@@ -59,4 +61,24 @@ for (const labels of [
 test("hidden restriction text does not prevent cancellation", async () => {
   const p = await run({sent: "Sent requests", cancel: "Cancel request", blocked: "Please try again later", hiddenWarning: true});
   assert.deepEqual(p.clicks, ["Sent requests", "Cancel request"]);
+});
+
+test("Stop after opening sent requests prevents every cancellation click", async () => {
+  const p = await run({sent: "View sent requests", cancel: "Cancel request", stopAfterEntry: true});
+  assert.deepEqual(p.clicks, ["View sent requests"]);
+  assert.equal(p.alerts.length, 0);
+});
+
+test("reinjection cancels the old request task and Stop clears both pending runs", async () => {
+  let next = 0;
+  const jobs = new Map();
+  const context = vm.createContext({window: {}, location: {pathname: "/friends/requests"},
+    setTimeout: callback => { const id = ++next; jobs.set(id, callback); return id; },
+    clearTimeout: id => jobs.delete(id), console});
+  const first = vm.runInContext(source, context), old = context.window.__fbCancelRequestsCtrl;
+  const second = vm.runInContext(source, context), current = context.window.__fbCancelRequestsCtrl;
+  assert.notEqual(current, old); assert.equal(old.run, false); assert.equal(jobs.size, 1);
+  current.stop(); await Promise.all([first, second]);
+  assert.equal(current.run, false); assert.equal(jobs.size, 0);
+  assert.equal(context.window.__fbCancelRequestsCtrl, null);
 });

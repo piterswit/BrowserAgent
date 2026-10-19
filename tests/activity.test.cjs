@@ -110,7 +110,7 @@ function popupFixture(p, {label = "Close", text = "Optional notice", fields = []
     getAttribute: name => name === "role" ? role : null,
     getBoundingClientRect: () => ({width: 300, height: 150, top: 100, bottom: 250}),
     contains: node => fields.includes(node),
-    querySelectorAll: selector => selector.includes("input") ? fields : label ? [close] : []
+    querySelectorAll: selector => selector.includes("input") ? fields : selector.includes('role="button"') && label ? [close] : []
   };
   const close = {
     isConnected: true, innerText: label, getAttribute: () => null,
@@ -459,6 +459,81 @@ function background() {
     closeWindows: async () => { normalWindows = []; await windowRemoved[0](); },
     openWindow: () => { normalWindows = [{id: 1}]; windowCreated[0](); }};
 }
+
+for (const flag of ["avatarBusy", "avatarStarting"]) {
+  for (const action of ["scroll30", "auto_group", "auto_custom", "auto_reels", "cancel_friend_requests", "change_avatar"]) {
+    test(`${flag}: rejects ${action} without changing the active task epoch`, async () => {
+      const b = background(); await flush();
+      vm.runInContext(`${flag} = true`, b.context);
+      const epoch = vm.runInContext("activityEpoch", b.context), injections = b.injected.length;
+      await assert.rejects(vm.runInContext(`handleAction({action: '${action}'})`, b.context), {name: "TaskBusyError"});
+      assert.equal(vm.runInContext("activityEpoch", b.context), epoch);
+      assert.equal(b.injected.length, injections);
+    });
+  }
+}
+
+test("the avatar reservation blocks starts before asynchronous stop finishes and releases on failure", async () => {
+  const b = background(); await flush();
+  let rejectStop;
+  b.context.waitingStop = new Promise((_resolve, reject) => { rejectStop = reject; });
+  vm.runInContext("stopActivity = () => waitingStop", b.context);
+  const changing = vm.runInContext("handleAction({action:'change_avatar'})", b.context).catch(error => error);
+  assert.equal(vm.runInContext("avatarStarting", b.context), true);
+  await assert.rejects(vm.runInContext("startActivity('home')", b.context), {name: "TaskBusyError"});
+  rejectStop(new Error("stop failed")); assert.equal((await changing).message, "stop failed");
+  assert.equal(vm.runInContext("avatarStarting", b.context), false);
+});
+
+test("busy rejection reports detail without replacing the avatar state with an error", async () => {
+  const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  vm.runInContext("avatarBusy = true", b.context);
+  await vm.runInContext("handleAction({action:'auto_group'}).catch(reportError)", b.context);
+  assert.equal(b.messages.at(-1).type, "activity_detail");
+  assert.match(b.messages.at(-1).detail, /换头像/);
+  await vm.runInContext("stopActivity()", b.context);
+  assert.equal(b.messages.filter(message => message.status === "stop").length, 0);
+});
+
+test("stopTabs cancels a standalone friend-request task before stopping the activity runtime", async () => {
+  const b = background(); await flush(); let cancelled = 0, stopped = 0;
+  const window = {__fbCancelRequestsCtrl: {stop() { cancelled++; }},
+    __fbActivityRuntime: {stop() { stopped++; }} };
+  b.chrome.scripting.executeScript = async options => [{result:
+    vm.runInNewContext(`(${options.func.toString()})(123)`, {window})}];
+  await vm.runInContext("stopTabs(activityEpoch)", b.context);
+  assert.equal(cancelled, 1); assert.equal(stopped, 1);
+});
+
+test("a cancelled friend-request script cannot overwrite a subsequently started task", async () => {
+  const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}; navigateActivity = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  const execute = b.chrome.scripting.executeScript;
+  let release;
+  b.chrome.scripting.executeScript = options => options.files?.includes("cancel_friend_requests.js") ?
+    new Promise(resolve => { release = resolve; }) : execute(options);
+  const cancelling = vm.runInContext("handleAction({action:'cancel_friend_requests'})", b.context);
+  await flush(); assert.equal(b.messages.at(-1).status, "cancel_friend_requests");
+  await vm.runInContext("startActivity('home')", b.context);
+  release([]); await cancelling;
+  assert.equal(b.messages.at(-1).status, "auto_main_page");
+});
+
+test("a late injection failure cannot replace a newer task's status", async () => {
+  const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  const execute = b.chrome.scripting.executeScript;
+  let rejectOld;
+  b.chrome.scripting.executeScript = options => options.files?.includes("tools.js") && !rejectOld ?
+    new Promise((_resolve, reject) => { rejectOld = reject; }) : execute(options);
+  const old = vm.runInContext("startActivity('home').catch(reportError)", b.context);
+  await flush();
+  await vm.runInContext("startActivity('custom')", b.context);
+  rejectOld(new Error("old page closed")); await old;
+  assert.equal(b.messages.at(-1).status, "auto_custom");
+  assert.equal(vm.runInContext("activeRun.mode", b.context), "custom");
+});
 test("failed connections retry with backoff and never create overlapping sockets", async () => {
   const b = background(); await flush();
   assert.equal(b.sockets.length, 1);
@@ -471,6 +546,55 @@ test("failed connections retry with backoff and never create overlapping sockets
   await b.clock.advance(4999); assert.equal(b.sockets.length, 5);
   await b.clock.advance(1); assert.equal(b.sockets.length, 6);
   assert.equal(b.clock.jobs.size, 1);
+});
+
+test("the connect URL retries immediately during backoff without starting activity", async () => {
+  const b = background(); await flush();
+  b.sockets[0].onerror();
+  assert.equal(b.sockets.length, 1);
+  const tab = {...b.tabs[0], url: "https://www.facebook.com/?fb_bridge_connect_extension"};
+  for (const listener of b.updates) listener(tab.id, {status: "complete"}, tab);
+  await flush();
+  assert.equal(b.sockets.length, 2);
+  assert.equal(b.sockets[1].url, "ws://127.0.0.1:8765");
+  assert.equal(vm.runInContext("activeRun", b.context), null);
+  assert.equal(b.injected.length, 0);
+  // A second completion or the obsolete retry must not create another socket.
+  for (const listener of b.updates) listener(tab.id, {status: "complete"}, tab);
+  await b.clock.advance(750);
+  assert.equal(b.sockets.length, 2);
+});
+
+test("the connect URL refreshes identity on an open socket but not during an avatar task", async () => {
+  const b = background(); await flush();
+  b.context.identityRefreshes = 0;
+  vm.runInContext("initializeAccount = async () => { identityRefreshes++; }", b.context);
+  b.sockets[0].readyState = 1; b.sockets[0].onopen(); await flush();
+  const tab = {...b.tabs[0], url: "https://www.facebook.com/?fb_bridge_connect_extension=1"};
+  const open = async () => {
+    for (const listener of b.updates) listener(tab.id, {status: "complete"}, tab);
+    await flush();
+  };
+  await open();
+  assert.equal(b.context.identityRefreshes, 2);
+  for (const flag of ["avatarBusy", "avatarStarting"]) {
+    vm.runInContext(`${flag} = true`, b.context); await open();
+    assert.equal(b.context.identityRefreshes, 2);
+    vm.runInContext(`${flag} = false`, b.context);
+  }
+  assert.equal(b.sockets.length, 1);
+});
+
+test("ordinary Facebook pages do not bypass connection retry backoff", async () => {
+  const b = background(); await flush(); b.sockets[0].onerror();
+  for (const listener of b.updates) listener(1, {status: "complete"}, b.tabs[0]);
+  await flush(); assert.equal(b.sockets.length, 1);
+});
+
+test("the Connect popup command also retries immediately during backoff", async () => {
+  const b = background(); await flush(); b.sockets[0].onerror();
+  b.runtimeMessages[0]({cmd: "connect_py"}, {}, () => {}); await flush();
+  assert.equal(b.sockets.length, 2);
 });
 test("established disconnect reconnects and closing all windows disables retries", async () => {
   const b = background(); await flush();

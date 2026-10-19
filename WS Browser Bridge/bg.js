@@ -8,6 +8,10 @@ const PORTS=[
 ];
 
 let avatarBusy = false;
+let avatarStarting = false;
+function requireAvailableBrowser() {
+  if (avatarBusy || avatarStarting) throw Object.assign(new Error("换头像进行中，请完成后再启动其他任务"), {name: "TaskBusyError"});
+}
 const taskTabs = new Set();
 let avatarOperation = null;
 
@@ -301,7 +305,7 @@ async function navigateAvatarTab(tabId, path = "/me") {
 }
 
 async function runAvatarChange(filePath, expectedProfile) {
-  if (avatarBusy) return;
+  if (avatarBusy) throw Object.assign(new Error("换头像进行中"), {name: "TaskBusyError"});
   avatarBusy = true;
   let target;
   let attached = false;
@@ -478,6 +482,7 @@ async function stopTabs(epoch) {
         func: token => {
           window.__fbActivityEpoch = Math.max(window.__fbActivityEpoch || 0, token);
           window.__fbActivityRequest = null;
+          window.__fbCancelRequestsCtrl?.stop();
           if (window.__fbActivityRuntime) {
             const ctrl = window.__fbActivityCtrl;
             const snapshot = ctrl ? {runId: ctrl.runId, stats: ctrl.snapshotStats?.()} : window.__fbActivityLastSnapshot;
@@ -518,7 +523,7 @@ async function stopActivity() {
   await chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
   const snapshots = await stopTabs(epoch);
   const stats = run ? normalizeActivityStats(snapshots.find(snapshot => snapshot.runId === run.runId)?.stats || run.stats) : null;
-  if (activityEpoch === epoch) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
+  if (activityEpoch === epoch && !avatarBusy && !avatarStarting) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
 }
 
 async function navigateActivity(tabId, url, epoch) {
@@ -552,7 +557,9 @@ function isReelsUrl(url) {
 }
 
 async function startActivity(mode, requestedTab = null, automatic = false) {
+  requireAvailableBrowser();
   await suppressionReady;
+  requireAvailableBrowser();
   if (automatic && (autoSuppressed || activeRun)) return;
   const epoch = nextEpoch();
   activeRun = null;
@@ -583,7 +590,8 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
   activeRun = {runId, tabId: tab.id, epoch, mode, stats: normalizeActivityStats(null)};
   try { await injectActivity(tab.id, mode, runId, epoch); }
   catch (error) {
-    if (activityEpoch === epoch) activeRun = null;
+    if (activityEpoch !== epoch) return;
+    activeRun = null;
     throw error;
   }
 }
@@ -622,19 +630,25 @@ async function injectActivity(tabId, mode, runId, epoch) {
 }
 
 async function openAndInject(url, file) {
+  requireAvailableBrowser();
   const epoch = nextEpoch();
   activeRun = null;
   autoSuppressed = true;
   await chrome.storage.session.set({activitySuppressed: true});
   await stopTabs(epoch);
+  if (activityEpoch !== epoch) return;
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   if (!tab) return;
   await navigateActivity(tab.id, url, epoch);
   if (activityEpoch !== epoch) return;
-  await chrome.scripting.executeScript({target: {tabId: tab.id}, files: [file]});
+  safeSend({type: "status", status: "cancel_friend_requests"});
+  try { await chrome.scripting.executeScript({target: {tabId: tab.id}, files: [file]}); }
+  catch (error) { if (activityEpoch === epoch) throw error; }
+  if (activityEpoch === epoch) safeSend({type: "status", status: "stop"});
 }
 function reportError(error) {
   if (error.name === "AbortError") return;
+  if (error.name === "TaskBusyError") { safeSend({type: "activity_detail", detail: error.message}); return; }
   safeSend({type: "status", status: "activity_error", error: error.message || String(error)});
 }
 async function handleAction(msg) {
@@ -645,15 +659,19 @@ async function handleAction(msg) {
   if (msg.action === "auto_reels") return startActivity("reels");
   if (msg.action === "auto_custom") return startActivity("custom");
   if (msg.action === "change_avatar") {
-    await stopActivity();
-    return runAvatarChange(msg.file_path, msg.profile_url);
+    requireAvailableBrowser();
+    avatarStarting = true;
+    try {
+      await stopActivity();
+      return await runAvatarChange(msg.file_path, msg.profile_url);
+    } finally { avatarStarting = false; }
   }
   if (msg.action === "cancel_friend_requests") {
     await openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
-    safeSend({type: "status", status: "cancel_friend_requests"});
   }
-  if (msg.action === "open") await chrome.tabs.create({url: msg.url});
+  if (msg.action === "open") { requireAvailableBrowser(); await chrome.tabs.create({url: msg.url}); }
   if (msg.action === "scroll") {
+    requireAvailableBrowser();
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     if (tab && isFacebook(tab.url)) await chrome.scripting.executeScript({
       target: {tabId: tab.id}, func: dy => window.scrollBy({top: dy, behavior: "instant"}), args: [msg.dy]
@@ -716,6 +734,17 @@ function connect(i = 0) {
     try { socket.close(); } catch {}
   };
 }
+function requestConnection() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    if (!avatarBusy && !avatarStarting) initializeAccount(ws).catch(reportError);
+    return;
+  }
+  if (ws?.readyState === WebSocket.CONNECTING) return;
+  // An explicit user request should not wait for the automatic retry backoff.
+  clearRetry();
+  retryDelay = 5000;
+  connect();
+}
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== RETRY_ALARM) return;
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
@@ -756,8 +785,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   if (msg.cmd === "connect_py") {
-    if (ws?.readyState === WebSocket.OPEN && !avatarBusy) initializeAccount(ws).catch(reportError);
-    else connect();
+    requestConnection();
   } else if (msg.cmd === "fb_bridge_active_stopped") {
     if (activeRun?.runId === msg.runId && activeRun.tabId === sender.tab?.id) {
       const stats = normalizeActivityStats(msg.stats || activeRun.stats);
@@ -795,7 +823,9 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
     return;
   }
   if (info.status !== "complete" || taskTabs.has(tabId) || !isFacebook(tab.url)) return;
-  connect();
+  const url = new URL(tab.url);
+  if (url.searchParams.has("fb_bridge_connect_extension")) requestConnection();
+  else connect();
   if (activeRun?.tabId === tabId && activeRun.needsResume) {
     if (!isReelsUrl(tab.url)) { stopActivity().catch(reportError); return; }
     const run = activeRun;
@@ -803,7 +833,6 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
     injectActivity(tabId, run.mode, run.runId, run.epoch).catch(reportError);
     return;
   }
-  const url = new URL(tab.url);
   if (url.searchParams.has("fb_bridge_auto_extension")) startActivity("home", tabId, true).catch(reportError);
 });
 chrome.tabs.onRemoved.addListener(tabId => {

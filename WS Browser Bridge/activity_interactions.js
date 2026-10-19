@@ -66,10 +66,26 @@
     const homePlan = ["like", "comment", "like", "share", "comment", "like"];
     let planIndex = 0;
     const scanIssues = {};
-    const recordAttempt = kind => { counts[kind]++; ctrl.recordInteraction(kind); };
-    const seenNodes = new WeakSet();
+    const recordAttempt = (kind, item) => {
+      counts[kind]++;
+      if (item.key) history.set(kind + ":" + item.key, Date.now());
+      else {
+        if (!seenNodes.has(item.button)) seenNodes.set(item.button, new Set());
+        seenNodes.get(item.button).add(kind);
+      }
+      ctrl.recordInteraction(kind);
+    };
+    const seenNodes = new WeakMap();
+    const inFlight = new Set();
+    const handled = (item, kind) => item.key ? history.has(kind + ":" + item.key) : seenNodes.get(item.button)?.has(kind);
+    const reservation = (item, kind) => item.key ? kind + ":" + item.key : item.button;
     let nextAttempt = Date.now() + (home ? random(20000, 30000) : random(30000, 50000));
     const ownedOverlays = new Set();
+    function adoptOverlay(scope) {
+      if (!window.__fbActivityRuntime.isProtectedOverlay(scope)) {
+        ownedOverlays.add(scope); ctrl.interactionScopes.add(scope);
+      }
+    }
     const pendingDrafts = new Map();
     let pendingNotification = null;
     const draft = node => (node.value || node.innerText || "").trim();
@@ -103,6 +119,7 @@
     }
     function safeCleanup() {
       if (!ctrl.pageAvailable() || ctrl.recentUserInput()) return;
+      if (window.__fbActivityRuntime.hasProtectedOverlay()) { ctrl.canAct(); return; }
       cleanupDrafts();
       if (pendingNotification) {
         const {trigger, panel, lastInput} = pendingNotification;
@@ -125,6 +142,7 @@
     function maintainPage() {
       safeCleanup();
       if (ctrl.mode !== "home" || !ctrl.pageAvailable() || ctrl.recentUserInput()) return;
+      if (window.__fbActivityRuntime.hasProtectedOverlay()) { ctrl.canAct(); return; }
       for (const button of buttons(document).filter(node => closeChatWords.test(text(node)))) {
         let scope = button.closest('[role="dialog"], [role="complementary"]');
         if (!scope) {
@@ -171,6 +189,7 @@
       } catch (error) { if (error.name === "AbortError") throw error; return false; }
       finally {
         if (ctrl.run) pendingNotification = {trigger, panel, lastInput};
+        ctrl.interactionScopes.clear();
         safeCleanup();
       }
     }
@@ -199,11 +218,12 @@
     async function openedOverlay(previous) {
       const scope = await waitFor(() => overlays().find(node => !previous.has(node)),
         () => overlays().find(node => !previous.has(node)) || null);
-      if (scope) ownedOverlays.add(scope);
+      if (scope) adoptOverlay(scope);
       return scope;
     }
     function candidates(kind) {
       const items = [];
+      let entries = 0, unknown = 0, processed = 0;
       delete scanIssues[kind];
       if (kind === "join") {
         for (const button of buttons(document).filter(node => matches(node, labels.join))) {
@@ -218,7 +238,16 @@
       } else {
         for (const scope of document.querySelectorAll('[role="article"]')) {
           if (scope.closest?.('[role="dialog"], [role="menu"], [role="complementary"]')) continue;
-          const button = actionButtons(scope, kind).find(node => kind !== "like" || unliked(node));
+          const actions = actionButtons(scope, kind);
+          entries += actions.length;
+          const button = actions.find(node => {
+            if (kind === "like" && !unliked(node)) {
+              if (liked(node)) processed++; else unknown++;
+              return false;
+            }
+            if (handled({button: node, key: identity(scope, kind)}, kind)) { processed++; return false; }
+            return true;
+          });
           if (!button || (kind === "like" && !unliked(button))) continue;
           const id = identity(scope, kind);
           if (kind !== "like" && !id) {
@@ -233,8 +262,14 @@
           }
         }
       }
-      return items.filter(item => !seenNodes.has(item.button) &&
-        (!item.key || !history.has(kind + ":" + item.key)));
+      const available = items.filter(item => !handled(item, kind) && !inFlight.has(reservation(item, kind)));
+      if (!available.length && ["like", "comment", "share"].includes(kind) && !scanIssues[kind]) {
+        const name = {like: "点赞", comment: "评论", share: "分享"}[kind];
+        scanIssues[kind] = unknown ? `发现 ${unknown} 个图标点赞入口，但缺少已赞／未赞状态，未点击以免取消已有点赞` :
+          processed ? `发现 ${entries} 个可见${name}入口，其中 ${processed} 个已互动或已处理` :
+          `未找到可见的${name}入口（帖子容器 ${document.querySelectorAll('[role="article"]').length} 个）`;
+      }
+      return available;
     }
     async function comment(item) {
       // Do not replace or submit someone else's draft.
@@ -245,9 +280,19 @@
       const previous = new Set(overlays());
       await click(item.button, null, null, () => identity(item.scope, "comment") === item.key);
       let scope = item.scope;
+      const commentOverlay = node => {
+        if (chatScope(node) || window.__fbActivityRuntime.isProtectedOverlay(node)) return false;
+        const key = identity(node, "comment");
+        if (key) return key === item.key;
+        const names = [node.getAttribute("aria-label"),
+          ...[...node.querySelectorAll('[role="heading"], h1, h2')].map(text)];
+        return names.some(value => /comments?|评论|評論|留言/i.test(value || "")) ||
+          editors(node).some(editor => /comments?|评论|評論|留言/i.test(editor.getAttribute("aria-label") || "")) ||
+          !!findButton(node, /^(Post comment|Send comment|Submit comment|发表评论|发布评论|發佈留言|發表留言|送出留言)$/i);
+      };
       const editor = await waitFor(() => {
-        scope = overlays().find(node => !previous.has(node) && !chatScope(node)) || item.scope;
-        if (scope !== item.scope) ownedOverlays.add(scope);
+        scope = overlays().find(node => !previous.has(node) && commentOverlay(node)) || item.scope;
+        if (scope !== item.scope) adoptOverlay(scope);
         return [...scope.querySelectorAll(selector)].find(visible);
       }, () => scope);
       if (!editor || (editor.value || editor.innerText || "").trim()) {
@@ -255,7 +300,7 @@
       }
       const value = comments[Math.floor(Math.random() * comments.length)];
       const lastInput = ctrl.lastInput;
-      if (scope !== item.scope) ownedOverlays.add(scope);
+      if (scope !== item.scope) adoptOverlay(scope);
       let inserted = false, submitted = false;
       try {
         check(scope);
@@ -268,7 +313,9 @@
         inserted = true;
         await ctrl.sleep(random(1500, 3000));
         check(scope, editor);
-        if (draft(editor) !== value) { ctrl.noteInteractionIssue("评论内容发生变化，未提交", "comment"); return false; }
+        if (draft(editor) !== value || identity(item.scope, "comment") !== item.key) {
+          ctrl.noteInteractionIssue("评论内容或目标帖子发生变化，未提交", "comment"); return false;
+        }
         const sendWords = /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i;
         let parent = editor.parentElement, send;
         for (let depth = 0; parent && scope.contains(parent) && depth < 8; depth++, parent = parent.parentElement) {
@@ -278,9 +325,9 @@
           send = submit.map(node => findButton(node, sendWords)).find(Boolean) || findButton(parent, sendWords);
           if (send || parent === scope) break;
         }
-        if (send) await click(send, scope, editor, () => draft(editor) === value, () => recordAttempt("comment"));
+        if (send) await click(send, scope, editor, () => draft(editor) === value && identity(item.scope, "comment") === item.key, () => recordAttempt("comment", item));
         else {
-          recordAttempt("comment");
+          recordAttempt("comment", item);
           editor.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
           editor.dispatchEvent(new KeyboardEvent("keyup", {key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true}));
         }
@@ -318,7 +365,7 @@
       const beforeStory = new Set(overlays());
       const beforeText = texts(menu).join("\n");
       // Selecting this entry may publish immediately; never submit it twice to find out.
-      await click(option, menu, null, () => identity(item.scope, "share") === item.key, () => recordAttempt("share"));
+      await click(option, menu, null, () => identity(item.scope, "share") === item.key, () => recordAttempt("share", item));
       let composer;
       const next = await waitFor(() => {
         if (successNotice()) return "confirmed";
@@ -328,23 +375,18 @@
       }, () => composer || overlays().find(node => !beforeStory.has(node)) || menu);
       if (next === "confirmed") { ctrl.recordInteraction("share", true); return; }
       if (!composer) { ctrl.noteInteractionIssue("已选择快拍入口，未收到成功提示或确认窗口，不重发", "share"); return; }
-      ownedOverlays.add(composer);
+      adoptOverlay(composer);
       check(composer);
       const publish = findButton(composer, labels.story) || findButton(composer, labels.publish);
       if (publish) {
-        await click(publish, composer);
+        await click(publish, composer, null, () => identity(item.scope, "share") === item.key);
         await ctrl.sleep(1500);
         ctrl.guard();
         if (successNotice()) ctrl.recordInteraction("share", true);
       } else ctrl.noteInteractionIssue("快拍确认窗口没有可见的发布按钮", "share");
     }
-    async function execute(kind, item) {
+    async function perform(kind, item) {
       check();
-      if (counts[kind] >= limits[kind] || seenNodes.has(item.button) ||
-          (item.key && history.has(kind + ":" + item.key))) return false;
-      // Reserve the target before opening it; submission budgets are charged at the submit boundary.
-      seenNodes.add(item.button);
-      if (item.key) history.set(kind + ":" + item.key, Date.now());
       if (kind === "comment") return await comment(item);
       else if (kind === "share") await share(item);
       else {
@@ -355,7 +397,7 @@
           (kind !== "like" || unliked(item.button)), () => {
             canReacquire = kind === "like" && buttons(item.scope)
               .filter(node => isAction(node, "like") || matches(node, likedWords)).length === 1;
-            recordAttempt(kind);
+            recordAttempt(kind, item);
           });
         if (kind === "like") {
           // React may replace the button; only follow an unambiguous action on the same post.
@@ -386,6 +428,14 @@
       }
       return true;
     }
+    async function execute(kind, item) {
+      const token = reservation(item, kind);
+      if (counts[kind] >= limits[kind] || handled(item, kind) || inFlight.has(token)) return false;
+      // Preparation is reversible; persist deduplication only at a possible-submit boundary.
+      inFlight.add(token);
+      try { return await perform(kind, item); }
+      finally { inFlight.delete(token); }
+    }
     return {
       counts, limits, maintainPage, maybeNotifications,
       async maybeInteract(allowed = ["like", "comment", "share", "join"]) {
@@ -393,7 +443,7 @@
         const options = allowed.filter(kind => counts[kind] < limits[kind])
           .map(kind => {
             const items = candidates(kind);
-            if (!items.length && ["comment", "share"].includes(kind) && !ctrl.stats.issues?.[kind]) {
+            if (!items.length && ["like", "comment", "share"].includes(kind) && !ctrl.stats.issues?.[kind]) {
               ctrl.noteInteractionIssue(scanIssues[kind] || "没有可用目标：入口不可见、帖子已处理或未识别", kind);
             }
             return {kind, items};
@@ -434,7 +484,7 @@
         }
         catch (error) { if (error.name === "AbortError") throw error;
           ctrl.noteInteractionIssue(error.name === "InteractionPaused" ? ctrl.detail : "互动中断：" + error.message, choice.kind); return false; }
-        finally { safeCleanup(); }
+        finally { ctrl.interactionScopes.clear(); safeCleanup(); }
       }
     };
   };

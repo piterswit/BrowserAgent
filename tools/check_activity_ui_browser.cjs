@@ -5,6 +5,128 @@ const path = require("node:path");
 const {chromium} = require("playwright");
 const folder = path.join(__dirname, "../WS Browser Bridge");
 
+async function checkSecurityFalsePositives(browser) {
+  const page = await browser.newPage({viewport: {width: 1000, height: 700}});
+  try {
+    await page.context().route("**/*", route => route.abort());
+    await page.setContent(`<nav role="menu">Login activity</nav>
+      <article role="article"><a href="https://www.facebook.com/alice/posts/123">Post</a><button id="like" aria-pressed="false">Like</button></article>
+      <div role="dialog" aria-label="Comments" hidden><article role="article">Alice shared login tips</article>
+      <button id="close">Close</button></div>`);
+    await page.evaluate(() => {
+      window.chrome = {runtime: {sendMessage: async () => {}}};
+      window.__fbActivityRequest = {mode: "home", runId: "false-positive-test"};
+      window.likeClicks = 0;
+      document.querySelector("#like").onclick = event => {
+        window.likeClicks++; event.currentTarget.setAttribute("aria-pressed", "true");
+      };
+      document.querySelector("#close").onclick = () => document.querySelector('[role="dialog"]').hidden = true;
+    });
+    for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
+      await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+    }
+    const result = await page.evaluate(async () => {
+      const runtime = window.__fbActivityRuntime, ctrl = runtime.create("home");
+      ctrl.sleep = async () => { ctrl.guard(); };
+      const now = Date.now; let offset = 0; Date.now = () => now() + offset;
+      const actions = window.__fbActivityInteractions(ctrl); offset = 31000;
+      await actions.maybeInteract(["like"]);
+      const dialog = document.querySelector('[role="dialog"]'); dialog.hidden = false;
+      if (runtime.isProtectedOverlay(dialog) || !ctrl.canAct() || !dialog.hidden) throw Error("Post content blocked popup recovery");
+      dialog.hidden = false; dialog.setAttribute("aria-label", "Confirm your identity");
+      if (ctrl.canAct() || dialog.hidden) throw Error("Actual verification challenge was not protected");
+      const result = {clicks: window.likeClicks, confirmed: ctrl.stats.confirmed.like};
+      ctrl.stop(); return result;
+    });
+    assert.deepEqual(result, {clicks: 1, confirmed: 1});
+    console.log("Security false positives: navigation allows Like; post dialog closes; actual verification stays protected");
+  } finally { await page.close(); }
+}
+
+async function checkTaskBoundaries(browser) {
+  for (const scenario of ["Confirm your identity", "登录验证", "安全檢查", "overlapping-share"]) {
+    const page = await browser.newPage({viewport: {width: 1000, height: 700}});
+    try {
+      await page.context().route("**/*", route => route.abort());
+      await page.setContent(`<style>[role=dialog],[role=menu]{position:fixed;left:20px;width:400px;height:140px;background:white}
+        [role=menu]{top:100px}[role=dialog]{top:260px}[contenteditable]{min-height:30px}</style>
+        <article role="article"><a href="https://www.facebook.com/alice/posts/123">Post</a><button id="action">${scenario === "overlapping-share" ? "Share" : "Comment"}</button></article><div id="notice" role="status"></div>`);
+      await page.evaluate(scenario => {
+        window.chrome = {runtime: {sendMessage: async () => {}}};
+        window.__fbActivityRequest = {mode: "home", runId: "boundary-test"}; Math.random = () => 0;
+        window.actions = [];
+        document.querySelector("#action").onclick = () => {
+          if (scenario !== "overlapping-share") {
+            const popup = document.createElement("div"); popup.setAttribute("role", "dialog");
+            popup.textContent = scenario;
+            popup.insertAdjacentHTML("beforeend", '<div role="textbox" contenteditable="true"></div><button>Post comment</button><button>Close</button>');
+            popup.querySelectorAll("button").forEach(button => { button.onclick = () => window.actions.push(button.textContent); });
+            document.body.append(popup);
+          } else {
+            const menu = document.createElement("div"); menu.setAttribute("role", "menu");
+            menu.innerHTML = '<button>Share to your story (Friends)</button>'; document.body.append(menu);
+            menu.querySelector("button").onclick = () => {
+              const popup = document.createElement("div"); popup.setAttribute("role", "dialog");
+              popup.innerHTML = '<button>Share</button>'; document.body.append(popup);
+              popup.querySelector("button").onclick = () => {
+                window.actions.push("published"); document.querySelector("#notice").textContent = "Your story was shared";
+                popup.remove(); menu.remove();
+              };
+              document.addEventListener("keydown", event => {
+                if (event.key === "Escape") { window.actions.push("escape"); popup.remove(); }
+              });
+            };
+          }
+        };
+      }, scenario);
+      for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
+        await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+      }
+      const result = await page.evaluate(async scenario => {
+        const ctrl = window.__fbActivityRuntime.create("home");
+        ctrl.sleep = async () => { ctrl.guard(); await new Promise(resolve => setTimeout(resolve, 5)); ctrl.guard(); };
+        const now = Date.now; let offset = 0; Date.now = () => now() + offset;
+        const actions = window.__fbActivityInteractions(ctrl); offset = 31000;
+        await actions.maybeInteract([scenario === "overlapping-share" ? "share" : "comment"]);
+        actions.maintainPage();
+        const result = {actions: window.actions, editor: document.querySelector('[role="textbox"]')?.textContent,
+          stats: ctrl.snapshotStats(), detail: ctrl.detail}; ctrl.stop(); return result;
+      }, scenario);
+      if (scenario === "overlapping-share") {
+        assert.deepEqual(result.actions, ["published"]); assert.equal(result.stats.confirmed.share, 1);
+      } else {
+        assert.deepEqual(result.actions, []); assert.equal(result.editor, "");
+        assert.equal(result.stats.attempted.comment, 0); assert.match(result.detail, /安全验证/);
+      }
+      console.log(`${scenario}: operation boundary passed`);
+    } finally { await page.close(); }
+  }
+}
+
+async function checkRequestCancellation(browser) {
+  const page = await browser.newPage();
+  try {
+    await page.context().route("**/*", route => route.abort());
+    await page.route("https://www.facebook.com/**", route => route.fulfill({contentType: "text/html", body:
+      '<!doctype html><button id="sent">View sent requests</button><div role="dialog" hidden><h2>Sent requests</h2><div style="height:180px;overflow:auto">' +
+      '<button id="cancel">Cancel request</button><div style="height:1600px"></div></div></div>'}));
+    await page.goto("https://www.facebook.com/friends/requests");
+    await page.evaluate(() => {
+      const set = window.setTimeout; window.setTimeout = (callback, ms, ...args) => set(callback, Math.min(ms, 50), ...args);
+      window.entryClicks = 0; window.cancelClicks = 0;
+      document.querySelector("#sent").onclick = () => { window.entryClicks++; document.querySelector('[role="dialog"]').hidden = false; };
+      document.querySelector("#cancel").onclick = () => window.cancelClicks++;
+    });
+    await page.addScriptTag({content: fs.readFileSync(path.join(folder, "cancel_friend_requests.js"), "utf8")});
+    await page.waitForFunction(() => window.entryClicks === 1);
+    await page.evaluate(() => window.__fbCancelRequestsCtrl.stop());
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.cancelClicks), 0);
+    assert.equal(await page.evaluate(() => window.__fbCancelRequestsCtrl), null);
+    console.log("Friend-request task: Stop prevents later cancellation clicks");
+  } finally { await page.close(); }
+}
+
 async function checkPopupRecovery(browser) {
   const page = await browser.newPage({viewport: {width: 1000, height: 700}});
   try {
@@ -107,6 +229,9 @@ async function checkIconControls(browser) {
 async function main() {
   const browser = await chromium.launch({headless: true, channel: "chrome"});
   try {
+    await checkSecurityFalsePositives(browser);
+    await checkTaskBoundaries(browser);
+    await checkRequestCancellation(browser);
     await checkPopupRecovery(browser);
     await checkIconControls(browser);
     for (const labels of [

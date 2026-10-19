@@ -67,6 +67,45 @@ class AvatarServerTest(unittest.TestCase):
             self.app.auto_custom()
         self.assertEqual(sent, [("a", {"action": "auto_custom"})])
 
+    def test_busy_account_does_not_receive_new_activity_commands(self):
+        sent, details = [], []
+        async def send(message):
+            sent.append(json.loads(message))
+        self.app.clients["a"] = SimpleNamespace(send=send)
+        self.app.avatar_pending.add("a")
+        self.app.set_activity_detail = lambda cid, detail: details.append((cid, detail))
+        for action in ("scroll30", "auto_group", "auto_custom", "auto_reels", "cancel_friend_requests", "stop_scroll"):
+            asyncio.run(self.app.send(8765, "a", {"action": action}))
+        self.assertFalse(sent)
+        self.assertEqual(len(details), 6)
+        self.assertFalse(self.states)
+        self.app.avatar_pending.clear()
+        asyncio.run(self.app.send(8765, "a", {"action": "scroll30"}))
+        self.assertEqual(sent, [{"action": "scroll30"}])
+
+    def test_busy_account_stop_button_keeps_avatar_state(self):
+        self.app.avatar_pending = {"a", "b"}
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(cid)
+        self.app.stop_scroll()
+        self.assertEqual(details, ["a", "b"])
+        self.assertFalse(self.states)
+
+    def test_identity_refresh_preserves_running_state_and_result(self):
+        values = ("Alice", "123", "活跃首页", "正在浏览")
+        rows = []
+        def item(cid, option=None, **kwargs):
+            if option == "values":
+                return values
+            rows.append(kwargs["values"])
+        self.app.list_view = SimpleNamespace(exists=lambda cid: True, item=item)
+        self.app.default_avatar = "avatar"
+        self.app.avatar_photos = {}
+        self.app.update_avatar_ui = lambda *args: None
+        self.app.update_summary = lambda: None
+        self.app.register_client_ui("a", "Alice Updated", "123")
+        self.assertEqual(rows, [("Alice Updated", "123", "活跃首页", "正在浏览")])
+
     def test_locate_browser_only_targets_clicked_account(self):
         sent = []
         self.app.ports = {"b": 8766}
@@ -82,6 +121,27 @@ class AvatarServerTest(unittest.TestCase):
             self.app.locate_browser("disconnected")
         self.assertEqual(sent, [(8766, "b", {"action": "locate_browser"})])
         self.assertFalse(self.states)
+
+    def test_double_click_locates_only_the_clicked_row(self):
+        located = []
+        self.app.locate_browser = located.append
+        for region in ("tree", "cell"):
+            self.app.list_view = SimpleNamespace(
+                identify_region=lambda x, y, value=region: value,
+                identify_row=lambda y: "b", selection=lambda: ("a", "b"))
+            self.assertEqual(self.app.on_account_double_click(SimpleNamespace(x=20, y=60)), "break")
+        self.assertEqual(located, ["b", "b"])
+
+    def test_double_click_ignores_heading_separator_empty_and_disconnected_rows(self):
+        located = []
+        self.app.locate_browser = located.append
+        for region, row in (("heading", "b"), ("separator", "b"), ("nothing", ""),
+                            ("cell", ""), ("cell", "disconnected")):
+            self.app.list_view = SimpleNamespace(
+                identify_region=lambda x, y, value=region: value,
+                identify_row=lambda y, value=row: value)
+            self.assertIsNone(self.app.on_account_double_click(SimpleNamespace(x=20, y=60)))
+        self.assertFalse(located)
 
     def test_browser_foreground_is_granted_after_menu_closes(self):
         callbacks = []
@@ -168,6 +228,20 @@ class AvatarServerTest(unittest.TestCase):
             "attempted": {"comment": 1}, "confirmed": {"comment": 1},
             "issues": {"comment": "Old failure", "share": {"invalid": True}}})
         self.assertEqual(details, ["点赞 0 次；评论 1 次；分享 0 次"])
+
+    def test_global_block_reason_is_not_hidden_by_action_scan_issues(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {"issue": "暂停：登录或安全验证弹框需要人工处理",
+            "issues": {"like": "未找到点赞入口", "comment": "未找到评论入口", "share": "未找到分享入口"}})
+        self.assertIn("点赞：未找到点赞入口", details[0])
+        self.assertIn("原因：暂停：登录或安全验证弹框需要人工处理", details[0])
+
+    def test_duplicate_global_reason_is_shown_only_once(self):
+        details = []
+        self.app.set_activity_detail = lambda cid, detail: details.append(detail)
+        self.app.show_activity_stats("a", {"issue": "未找到点赞入口", "issues": {"like": "未找到点赞入口"}})
+        self.assertEqual(details[0].count("未找到点赞入口"), 1)
 
     def test_stop_message_displays_counts_after_setting_idle(self):
         events = []

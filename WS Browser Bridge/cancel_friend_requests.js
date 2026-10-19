@@ -1,4 +1,26 @@
 (() => {
+window.__fbCancelRequestsCtrl?.stop();
+const pending = new Map();
+const notices = new Set();
+const taskPath = location.pathname;
+const abort = () => Object.assign(new Error("取消好友请求任务已停止"), {name: "AbortError"});
+const ctrl = {
+    run: true,
+    stop() {
+        if (!this.run) return;
+        this.run = false;
+        for (const [id, reject] of pending) { clearTimeout(id); reject(abort()); }
+        pending.clear();
+        for (const node of notices) node.remove();
+        notices.clear();
+        if (window.__fbCancelRequestsCtrl === this) window.__fbCancelRequestsCtrl = null;
+    }
+};
+window.__fbCancelRequestsCtrl = ctrl;
+function guard() {
+    if (location.pathname !== taskPath) ctrl.stop();
+    if (!ctrl.run) throw abort();
+}
 const requestLabels = {
     cancel: /^(Cancel request|取消请求|取消好友请求|取消邀请|取消邀請|取消邀约|取消邀約|取消交友邀請|取消好友邀請)$/i,
     sent: /^(View sent requests|Sent requests|查看已发送请求|查看已发送的请求|查看发出的请求|已发送的请求|发出的请求|查看已傳送邀請|查看送出的邀請|查看已送出邀請|查看已送出的邀請|查看已發送的邀請|查看已發送的交友邀請|已傳送邀請|送出的邀請|已送出的邀請|已發送的邀請|已發送的交友邀請)$/i,
@@ -12,7 +34,11 @@ function rand(a, b) {
 }
 
 function sleep(ms) {
-    return new Promise(r => setTimeout(r, ms));
+    guard();
+    return new Promise((resolve, reject) => {
+        const id = setTimeout(() => { pending.delete(id); resolve(); }, ms);
+        pending.set(id, reject);
+    }).then(() => guard());
 }
 
 function isVisible(el) {
@@ -29,6 +55,7 @@ async function waitFor(fn, timeout = 15000) {
     const t = Date.now();
 
     while (Date.now() - t < timeout) {
+        guard();
         const ret = fn();
         if (ret) return ret;
         await sleep(300);
@@ -57,6 +84,7 @@ async function main() {
                 box-shadow:0 4px 12px rgba(0,0,0,.3);
             `;
             document.body.appendChild(progressBox);
+            notices.add(progressBox);
         }
 
         progressBox.innerText = text;
@@ -87,6 +115,7 @@ async function main() {
         toast.style.fontFamily = 'Segoe UI, Helvetica, Arial, sans-serif';
         toast.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
         document.body.appendChild(toast);
+        notices.add(toast);
 
         setTimeout(() => {
             toast.style.opacity = '0';
@@ -134,13 +163,13 @@ async function main() {
     const totalScroll = rand(20, 30);
     console.log(`开始 ${totalScroll} 次滚动`);
     for (let scrollCount = 1; scrollCount <= totalScroll; scrollCount++) {
+        guard();
         scrollElement.scrollTop = scrollElement.scrollHeight;
-        scrollCount++;
 
-        await new Promise(resolve => setTimeout(resolve, 3500));
+        await sleep(3500);
 
         scrollElement.scrollTop -= 30;
-        await new Promise(resolve => setTimeout(resolve, 150));
+        await sleep(150);
         scrollElement.scrollTop += 30;
 
         // 滚动期间也顺便检测一下有没有突发风控
@@ -184,6 +213,7 @@ async function main() {
     let successCount = 0;
 
     for (let i = buttons.length - 1; i >= 0; i--) {
+        guard();
         let isSuccess = false;
         showProgress(`取消好友请求 ${buttons.length - i}/${buttons.length}`);
         try {
@@ -191,7 +221,7 @@ async function main() {
             console.log(`[总清缴进度: ${i + 1}/${buttons.length}] 已发送点击指令...`);
 
             // 给网页 UI 1.2秒的初步反应时间，用来渲染潜在的风控警告弹窗
-            await new Promise(resolve => setTimeout(resolve, 1200));
+            await sleep(1200);
 
             // 【天眼核心防御】：优先检查有没有冒出FB风控拦截弹窗
             if (checkFBBlockPopup()) {
@@ -211,6 +241,7 @@ async function main() {
                 isSuccess = true;
             }
         } catch (err) {
+            if (err.name === "AbortError") throw err;
             console.error(`第 ${i + 1} 个按钮点击遭遇故障:`, err);
             isSuccess = false;
         }
@@ -241,6 +272,7 @@ async function main() {
 
 // ===== 主循环 =====
 async function auto() {
+    guard();
 
     // 进入好友请求页
     if (!location.pathname.startsWith("/friends/requests")) {
@@ -273,5 +305,7 @@ async function auto() {
     await main();
 }
 
-return auto();
+return auto().catch(error => {
+    if (error.name !== "AbortError") console.error("取消好友请求失败", error);
+}).finally(() => ctrl.stop());
 })();

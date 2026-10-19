@@ -224,6 +224,7 @@ class App:
         self.list_view.bind("<<TreeviewSelect>>", lambda event: self.update_summary())
         self.account_menu = tk.Menu(self.root, tearoff=False)
         self.list_view.bind("<Button-3>", self.show_account_menu)
+        self.list_view.bind("<Double-Button-1>", self.on_account_double_click)
 
         yscroll = tb.Scrollbar(frame, orient="vertical", command=self.list_view.yview)
         self.list_view.configure(yscrollcommand=yscroll.set)
@@ -261,6 +262,9 @@ class App:
             return
         values = (name, fb_id or "未识别", "识别失败" if error else "空闲", error)
         if self.list_view.exists(client_id):
+            previous = self.list_view.item(client_id, "values")
+            if len(previous) >= 4:
+                values = (name, fb_id or previous[1], previous[2], previous[3])
             self.list_view.item(client_id, values=values, image=self.default_avatar)
             self.avatar_photos.pop(client_id, None)
         else:
@@ -305,6 +309,14 @@ class App:
 
     def selected_targets(self):
         return [self.get_item_target(i) for i in self.list_view.selection()]
+
+    def on_account_double_click(self, event):
+        if self.list_view.identify_region(event.x, event.y) not in {"tree", "cell"}:
+            return
+        client_id = self.list_view.identify_row(event.y)
+        if client_id and client_id in self.clients:
+            self.locate_browser(client_id)
+            return "break"
 
     def show_account_menu(self, event):
         client_id = self.list_view.identify_row(event.y)
@@ -549,6 +561,10 @@ class App:
             self.root.after(0, lambda c=client_id, s=f"发送失败: {exc}": self.finish_avatar(c, s))
 
     async def send(self,port,client_id,data):
+        if client_id in self.avatar_pending and data.get("action") in {
+                "scroll30", "auto_reels", "auto_group", "auto_custom", "cancel_friend_requests", "stop_scroll"}:
+            self.root.after(0, lambda c=client_id: self.set_activity_detail(c, "换头像进行中，未执行其他任务，请完成后再试"))
+            return
         ws = self.clients.get(client_id)
         if ws:
             try:
@@ -590,16 +606,15 @@ class App:
         issues = stats.get("issues")
         reasons = []
         if isinstance(issues, dict):
-            for kind, label in (("comment", "评论"), ("share", "分享")):
+            for kind, label in (("like", "点赞"), ("comment", "评论"), ("share", "分享")):
                 issue = issues.get(kind)
                 if min(count("confirmed", kind), count("attempted", kind)) == 0 and isinstance(issue, str) and issue:
                     reasons.append(f"{label}：{issue[:160]}")
         if reasons:
             detail += "；" + "；".join(reasons)
-        elif not any(count("attempted", kind) for kind in ("like", "comment", "share")):
-            issue = stats.get("issue")
-            if isinstance(issue, str) and issue:
-                detail += "；原因：" + issue[:160]
+        issue = stats.get("issue")
+        if isinstance(issue, str) and issue and not any(reason.endswith("：" + issue[:160]) for reason in reasons):
+            detail += "；原因：" + issue[:160]
         if prefix:
             detail = prefix + "；" + detail
         self.set_activity_detail(client_id, detail)
@@ -639,6 +654,9 @@ class App:
 
     def stop_scroll(self):
         for client_id in self.selected_targets():
+            if client_id in self.avatar_pending:
+                self.set_activity_detail(client_id, "换头像进行中，没有启动停止活跃操作")
+                continue
             port = self.ports.get(client_id)
             if port is not None:
                 self.set_status(client_id, "正在停止")

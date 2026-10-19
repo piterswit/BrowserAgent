@@ -1,5 +1,5 @@
 (() => {
-  const version = 9;
+  const version = 11;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -20,8 +20,32 @@
     return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight &&
       (rect.right === undefined || (rect.right > 0 && rect.left < innerWidth));
   };
+  const popupSelector = '[role="dialog"], [role="alertdialog"], [role="menu"], [aria-modal="true"], dialog[open]';
+  const floatingMenu = node => {
+    if (node.getAttribute?.("role") !== "menu" || typeof getComputedStyle !== "function") return true;
+    for (let parent = node; parent && parent !== document.body; parent = parent.parentElement) {
+      if (/absolute|fixed/.test(getComputedStyle(parent).position)) return true;
+    }
+    return false;
+  };
+  const isProtectedOverlay = node => {
+    if (!floatingMenu(node)) return false;
+    const securityWords = /\b(?:log\s?in|sign\s?in|security check|captcha|verification code|two.factor|confirm your identity|checkpoint)\b|登录|登入|验证码|驗證碼|身份验证|身分驗證|安全检查|安全檢查/i;
+    const names = [node.getAttribute?.("aria-label"),
+      ...(node.getAttribute?.("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+        .map(id => document.getElementById?.(id)?.innerText),
+      ...[...(node.querySelectorAll?.('[role="heading"], h1, h2') || [])]
+        .filter(heading => visible(heading) && !heading.closest?.('[role="article"]')).map(heading => heading.innerText)];
+    if (names.some(value => securityWords.test(value || ""))) return true;
+    if ([...(node.querySelectorAll?.('input, textarea, [contenteditable="true"]') || [])]
+      .some(field => field.type === "password" && visible(field))) return true;
+    // Post text in a comment/player dialog is not a security prompt.
+    if ((node.querySelectorAll?.('[role="article"], [role="feed"], video') || []).length) return false;
+    return securityWords.test(node.innerText || "");
+  };
   const runtime = {
-    version, visible,
+    version, visible, isProtectedOverlay,
+    hasProtectedOverlay() { return [...document.querySelectorAll(popupSelector)].some(node => visible(node) && isProtectedOverlay(node)); },
     stop() {
       window.__fbActivityRequest = null;
       window.__fbActivityCtrl?.stop();
@@ -38,6 +62,7 @@
       const ctrl = {
         run: true, started: false, runId: request.runId, mode, unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
         deadline: mode === "reels" ? null : Date.now() + 5 * 60 * 1000,
+        interactionScopes: new Set(),
         sessionActive() {
           if (!this.run) return false;
           const sameViewer = mode === "reels" && /^\/reels?(\/|$)/.test(location.pathname);
@@ -91,26 +116,17 @@
           });
         },
         dismissOverlays(scope = null) {
-          const popupSelector = '[role="dialog"], [role="alertdialog"], [role="menu"], [aria-modal="true"], dialog[open]';
           const label = node => [node.getAttribute?.("aria-label"), node.innerText].filter(Boolean)
             .map(value => value.replace(/\s+/g, " ").trim());
           const closeWords = /^(Close|Close (dialog|window|popup|menu)|Dismiss|Cancel|Not now|Maybe later|Close chat|Close conversation|Close chat window|Close chat with .+|关闭|关闭(窗口|弹窗|对话框|聊天|聊天窗口|对话)|关闭与.+的聊天|取消|暂不|稍后再说|以后再说|關閉|關閉(視窗|視窗對話方塊|對話方塊|彈窗|聊天室|聊天視窗|對話)|關閉與.+的聊天室|暫不|稍後再說|稍後再試|以後再說)$/i;
-          const securityWords = /log\s?in|sign\s?in|security check|captcha|verification code|two.factor|confirm your identity|checkpoint|登录|登入|验证码|驗證碼|身份验证|身分驗證|安全检查|安全檢查/i;
           let blocked = "", closing = false;
+          if (runtime.hasProtectedOverlay()) return {blocked: "暂停：登录或安全验证弹框需要人工处理", closing: false};
           for (const popup of new Set(document.querySelectorAll(popupSelector))) {
             if (!visible(popup)) { dismissals.delete(popup); continue; }
-            if (popup === this.playerScope || popup === scope || scope?.contains(popup) || popup.contains?.(scope)) continue;
-            if (popup.getAttribute?.("role") === "menu" && typeof getComputedStyle === "function") {
-              let floating = false;
-              for (let parent = popup; parent && parent !== document.body; parent = parent.parentElement) {
-                if (/absolute|fixed/.test(getComputedStyle(parent).position)) { floating = true; break; }
-              }
-              if (!floating) continue;
-            }
+            if (popup === this.playerScope || popup === scope || scope?.contains(popup) || popup.contains?.(scope) ||
+                [...this.interactionScopes].some(owned => popup === owned || owned.contains?.(popup) || popup.contains?.(owned))) continue;
+            if (!floatingMenu(popup)) continue;
             const fields = [...(popup.querySelectorAll?.('input, textarea, [contenteditable="true"]') || [])];
-            if (fields.some(node => node.type === "password") || label(popup).some(value => securityWords.test(value))) {
-              blocked = "暂停：登录或安全验证弹框需要人工处理"; continue;
-            }
             if (fields.some(node => node.files?.length || !["hidden", "button", "submit", "checkbox", "radio"].includes(node.type) &&
                 (node.value || node.innerText || "").trim())) {
               blocked = "暂停：弹框有未提交内容，请人工处理"; continue;
@@ -212,6 +228,7 @@
           if (!this.run) return;
           window.__fbActivityLastSnapshot = {runId: this.runId, stats: this.snapshotStats()};
           this.run = false;
+          this.interactionScopes.clear();
           for (const [id, reject] of pending) { clearTimeout(id); reject(abort()); }
           pending.clear();
           clearTimeout(this.expiration);

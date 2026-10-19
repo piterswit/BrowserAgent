@@ -43,8 +43,9 @@ function setup(kind, mode = "home") {
       if (selector === '[id="focused-state-composer-submit"]') return all.filter(child =>
         child.attributes.id === "focused-state-composer-submit");
       if (selector === "*") return all;
+      if (selector.includes('role="article"')) return all.filter(child => child.type === "article");
       if (selector.includes('role="heading"')) return all.filter(child => child.type === "heading");
-      if (selector.includes("textbox")) return all.filter(child => child.type === "editor");
+      if (selector.includes("textbox") || selector.includes("contenteditable")) return all.filter(child => child.type === "editor");
       return all.filter(child => child.type === "button");
     }
     descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
@@ -64,7 +65,7 @@ function setup(kind, mode = "home") {
   const window = {__fbActivityRequest: {mode, runId: "run-1"}, addEventListener() {}, removeEventListener() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})};
   const context = vm.createContext({...clock, Date: {now: () => now}, Math: {random: () => 0, floor: Math.floor},
     window, document, location: {pathname: "/", href: "https://www.facebook.com/"}, innerHeight: 700, innerWidth: 1000, URL,
-    getComputedStyle: node => ({position: "fixed", overflowY: node.scrollable ? "auto" : "visible"}),
+    getComputedStyle: node => ({position: node.style?.position || "fixed", overflowY: node.scrollable ? "auto" : "visible"}),
     Event: class { constructor(type) { this.type = type; } },
     KeyboardEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
     chrome: {runtime: {sendMessage: async () => {}}}});
@@ -106,8 +107,11 @@ test("the per-session like budget applies even to different posts", async () => 
   p.anchor.href = "https://www.facebook.com/alice/posts/789";
   p.article.add(new p.Node("button", "Like"));
   await p.clock.advance(90000);
+  const third = p.interactions.maybeInteract(["like"]);
+  await p.clock.advance(4000); assert.equal(await third, true);
+  assert.equal(p.clicks.length, 3);
+  await p.clock.advance(45000);
   assert.equal(await p.interactions.maybeInteract(["like"]), false);
-  assert.equal(p.clicks.length, 2);
 });
 
 test("updated feed budgets and shorter cooldown allow three distinct likes", async () => {
@@ -473,8 +477,108 @@ test("missing comment editor does not spend the submit budget for a different po
   assert.equal(p.ctrl.stats.issues.comment, undefined);
 });
 
+test("an unsubmitted comment target can be retried in a new run", async () => {
+  const p = setup("comment"), first = await p.start();
+  await p.clock.advance(10000); assert.equal(await first.promise, false);
+  assert.equal(p.window.__fbInteractionHistory.size, 0);
+  p.ctrl.stop(); p.article.add(new p.Node("editor"));
+  p.window.__fbActivityRequest = {mode: "home", runId: "second"};
+  const ctrl = p.window.__fbActivityRuntime.create("home");
+  const actions = p.window.__fbActivityInteractions(ctrl);
+  await p.clock.advance(25000); const retry = actions.maybeInteract(["comment"]);
+  await p.clock.advance(10000); assert.equal(await retry, true);
+  assert.equal(ctrl.stats.confirmed.comment, 1);
+});
+
+test("a recycled DOM button can act on a different stable post identity", async () => {
+  const p = setup("comment"); p.article.add(new p.Node("editor"));
+  const first = await p.start(); await p.clock.advance(10000); await first.promise;
+  p.anchor.href = "https://www.facebook.com/alice/posts/recycled";
+  await p.clock.advance(45000); const next = p.interactions.maybeInteract(["comment"]);
+  await p.clock.advance(10000); assert.equal(await next, true);
+  assert.equal(p.ctrl.stats.confirmed.comment, 2);
+});
+
+for (const label of ["Confirm your identity", "登录验证", "安全檢查"]) {
+  test(`${label}: a verification dialog opened during Comment is never edited or closed`, async () => {
+    const p = setup("comment"), popup = new p.Node("dialog", label);
+    const editor = popup.add(new p.Node("editor"));
+    popup.add(new p.Node("button", "Post comment")); popup.add(new p.Node("button", "Close"));
+    p.button.onclick = () => { p.document.overlays = [popup]; };
+    const {promise} = await p.start(); await p.clock.advance(10000);
+    assert.equal(await promise, false);
+    p.interactions.maintainPage();
+    assert.equal(editor.innerText, ""); assert.deepEqual(p.clicks, ["Comment"]);
+    assert.equal(p.ctrl.stats.attempted.comment, 0);
+    assert.match(p.ctrl.detail, /安全验证/);
+  });
+}
+
+test("an unrelated new dialog with a generic Send button is not adopted as a comment composer", async () => {
+  const p = setup("comment"), popup = new p.Node("dialog", "Feedback");
+  const editor = popup.add(new p.Node("editor")); popup.add(new p.Node("button", "Send"));
+  p.button.onclick = () => { p.document.overlays = [popup]; };
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  assert.equal(await promise, false); assert.equal(editor.innerText, "");
+  assert.equal(p.ctrl.stats.attempted.comment, 0);
+});
+
+test("a permanent navigation menu mentioning login does not block feed likes", async () => {
+  const p = setup("like"), menu = new p.Node("menu", "Login activity");
+  menu.attributes.role = "menu";
+  p.document.overlays = [menu];
+  // This is navigation, not a floating popup.
+  menu.style = {position: "static"};
+  p.button.onclick = () => { p.button.attributes["aria-pressed"] = "true"; };
+  assert.equal(p.window.__fbActivityRuntime.isProtectedOverlay(menu), false);
+  const {promise} = await p.start(); await p.clock.advance(4000); await promise;
+  assert.equal(p.ctrl.stats.confirmed.like, 1);
+});
+
+test("a post dialog mentioning login tips is not a verification challenge", () => {
+  const p = setup("like"), popup = new p.Node("dialog", "Alice shared login tips");
+  popup.attributes["aria-label"] = "Comments";
+  popup.add(new p.Node("article", "Login tips"));
+  assert.equal(p.window.__fbActivityRuntime.isProtectedOverlay(popup), false);
+});
+
+test("a missing like target has its own diagnostic even when comments are available", async () => {
+  const p = setup("comment"); p.article.add(new p.Node("editor"));
+  await p.clock.advance(25000); const attempt = p.interactions.maybeInteract(["like", "comment"]);
+  await p.clock.advance(10000); await attempt;
+  assert.match(p.ctrl.stats.issues.like, /点赞入口/);
+  assert.equal(p.ctrl.stats.confirmed.comment, 1);
+});
+
+test("a security dialog appearing after draft insertion blocks both Send and cleanup", async () => {
+  const p = setup("comment"), editor = p.article.add(new p.Node("editor")); editor.isContentEditable = true;
+  const {promise} = await p.start(); await p.clock.advance(2500);
+  assert.equal(editor.innerText, "Thanks for sharing!");
+  p.document.overlays = [new p.Node("dialog", "Confirm your identity")];
+  await p.clock.advance(10000); assert.equal(await promise, false);
+  assert.equal(editor.innerText, "Thanks for sharing!"); assert.equal(p.ctrl.stats.attempted.comment, 0);
+  p.interactions.maintainPage(); assert.equal(editor.innerText, "Thanks for sharing!");
+});
+
+test("a pending share menu is not dismissed when its confirmation dialog opens beside it", async () => {
+  const p = setup("share"), menu = new p.Node("menu"), composer = new p.Node("dialog");
+  const option = menu.add(new p.Node("button", "Share to your story (Friends)"));
+  composer.add(new p.Node("button", "Share")).onclick = () => {
+    p.document.alerts.push(new p.Node("alert", "Your story was shared"));
+    p.document.overlays = []; menu.isConnected = false; composer.isConnected = false;
+  };
+  let escapes = 0;
+  menu.dispatchEvent = () => { escapes++; composer.isConnected = false; };
+  p.button.onclick = () => { p.document.overlays = [menu]; };
+  option.onclick = () => { p.document.overlays = [menu, composer]; };
+  const {promise} = await p.start(); await p.clock.advance(10000); await promise;
+  assert.equal(p.ctrl.stats.confirmed.share, 1); assert.equal(escapes, 0);
+  assert.equal(p.ctrl.interactionScopes.size, 0);
+});
+
 test("a comment dialog taller than the viewport is accepted when its editor is visible", async () => {
   const p = setup("comment"), dialog = new p.Node("dialog");
+  dialog.attributes["aria-label"] = "Comments";
   dialog.getBoundingClientRect = () => ({width: 500, height: 1200, top: 0, bottom: 1200});
   dialog.add(new p.Node("editor"));
   p.button.onclick = () => { p.document.overlays = [dialog]; };
@@ -560,6 +664,7 @@ test("an unrelated dialog during comment submission does not strand our draft", 
 
 test("failed comments close their own empty overlay, never a pre-existing user dialog", async () => {
   const p = setup("comment"), dialog = new p.Node("dialog");
+  dialog.attributes["aria-label"] = "Comments";
   const editor = dialog.add(new p.Node("editor")); editor.isContentEditable = true;
   editor.dispatchEvent = () => {};
   const close = dialog.add(new p.Node("button", "Close"));
