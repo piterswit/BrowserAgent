@@ -15,11 +15,11 @@ from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
-import traceback
 from config_store import load_configuration, save_configuration
 from system_theme import system_theme_name
+from bridge_security import check_origin
 
-APP_VERSION = "0.8"
+APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
 
 # 防止系统进入睡眠
@@ -380,6 +380,9 @@ class App:
         try:
             async for msg in ws:
                 data = json.loads(msg)
+                if not isinstance(data, dict):
+                    await ws.close(code=1008, reason="Object required")
+                    return
 
                 # 心跳包
                 if data.get("type") == "heartbeat":
@@ -390,8 +393,16 @@ class App:
 
                 # 2. 处理初始化 (自动添加)
                 if data.get("type") == "init":
-                    client_id = data.get("client_id", "")
+                    requested_id = data.get("client_id", "")
+                    if (not isinstance(requested_id, str) or not 1 <= len(requested_id) <= 128
+                            or not all(c.isascii() and (c.isalnum() or c in "-_") for c in requested_id)
+                            or client_id is not None and requested_id != client_id
+                            or self.clients.get(requested_id) not in (None, ws)):
+                        await ws.close(code=1008, reason="Invalid or duplicate client ID")
+                        return
+                    client_id = requested_id
                     name = data.get("fb_name") or "未知用户"
+                    name = str(name)[:200]
                     if not client_id: continue
 
                     # 登记数据
@@ -407,12 +418,12 @@ class App:
                     identity_error = str(data.get("identity_error") or "")[:200]
                     avatar_data = data.get("avatar_data")
                     self.root.after(0, lambda c=client_id, n=name, f=display_id, e=identity_error, a=avatar_data: self.register_client_ui(c, n, f, e, a))
-                    print(f"浏览器已连接: {name} (ID: {client_id})")
+                    print("浏览器已连接")
                     if identity_error:
                         print(f"账号识别失败: {identity_error}")
 
                 # 3. 处理状态更新
-                elif data.get("type") == "status":
+                elif data.get("type") == "status" and self.clients.get(client_id) is ws:
                     status_map = {"auto_main_page": "活跃首页", "auto_reels": "活跃Reels", "auto_group": "活跃小组", "auto_custom": "自定义活跃", "stop": "空闲", "cancel_friend_requests": "取消好友请求"}
                     new_status = status_map.get(data.get("status"))
                     if data.get("status") == "change_avatar":
@@ -427,11 +438,11 @@ class App:
                         if isinstance(data.get("stats"), dict):
                             self.root.after(0, lambda c=client_id, stats=data["stats"], e=detail: self.show_activity_stats(c, stats, e))
 
-                elif data.get("type") == "activity_detail" and client_id:
+                elif data.get("type") == "activity_detail" and client_id and self.clients.get(client_id) is ws:
                     detail = str(data.get("detail") or "")[:200]
                     self.root.after(0, lambda c=client_id, d=detail: self.set_activity_detail(c, d))
 
-                elif data.get("type") == "avatar_result" and client_id:
+                elif data.get("type") == "avatar_result" and client_id and self.clients.get(client_id) is ws:
                     detail = str(data.get("error", ""))[:200]
                     if data.get("success") is True:
                         status = "头像更换成功" if data.get("confirmed") is True else "已提交保存，请核对头像"
@@ -447,8 +458,7 @@ class App:
         except websockets.ConnectionClosed as e:
             print(f"连接关闭 code={e.code} reason={e.reason}")
         except Exception as e:
-            print(f"连接异常: {e}")
-            traceback.print_exc()
+            print(f"连接异常: {type(e).__name__}")
         finally:
             if client_id and self.clients.get(client_id) is ws:
                 print("浏览器已断开:", client_id)
@@ -463,7 +473,11 @@ class App:
                 "127.0.0.1",
                 port,
                 ping_interval=20,
-                ping_timeout=60
+                ping_timeout=60,
+                process_request=check_origin,
+                max_size=131072,
+                max_queue=8,
+                compression=None
             )
             self.servers[port] = server
         except Exception as e:

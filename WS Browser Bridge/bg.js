@@ -189,7 +189,7 @@ async function loadAvatarThumbnail(url) {
   try {
     const source = new URL(url);
     if (source.protocol !== "https:" || !/(^|\.)(facebook\.com|fbcdn\.net|fbsbx\.com)$/.test(source.hostname)) return null;
-    const response = await fetch(source.href, {credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(8000)});
+    const response = await fetch(source.href, {credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(8000)});
     if (!response.ok) return null;
     const blob = await response.blob();
     if (!blob.type.startsWith("image/") || blob.size > 5 * 1024 * 1024) return null;
@@ -439,7 +439,7 @@ function safeSend(message, socket = ws) {
   try { socket.send(JSON.stringify({...message, client_id: clientId})); } catch {}
 }
 function isFacebook(url) {
-  try { return /(^|\.)facebook\.com$/.test(new URL(url).hostname); } catch { return false; }
+  try { const parsed = new URL(url); return parsed.protocol === "https:" && /(^|\.)facebook\.com$/.test(parsed.hostname); } catch { return false; }
 }
 
 let activityEpoch = Date.now();
@@ -652,6 +652,7 @@ function reportError(error) {
   safeSend({type: "status", status: "activity_error", error: error.message || String(error)});
 }
 async function handleAction(msg) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
   if (msg.action === "locate_browser") return locateBrowser().catch(error => console.warn("定位浏览器失败", error.message));
   if (msg.action === "stop_scroll") return stopActivity();
   if (msg.action === "scroll30") return startActivity("home");
@@ -669,11 +670,11 @@ async function handleAction(msg) {
   if (msg.action === "cancel_friend_requests") {
     await openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
   }
-  if (msg.action === "open") { requireAvailableBrowser(); await chrome.tabs.create({url: msg.url}); }
+  if (msg.action === "open" && isFacebook(msg.url)) { requireAvailableBrowser(); await chrome.tabs.create({url: msg.url}); }
   if (msg.action === "scroll") {
     requireAvailableBrowser();
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-    if (tab && isFacebook(tab.url)) await chrome.scripting.executeScript({
+    if (tab && isFacebook(tab.url) && Number.isFinite(msg.dy) && Math.abs(msg.dy) <= 10000) await chrome.scripting.executeScript({
       target: {tabId: tab.id}, func: dy => window.scrollBy({top: dy, behavior: "instant"}), args: [msg.dy]
     });
   }
@@ -726,6 +727,11 @@ function connect(i = 0) {
     initializeAccount(socket).catch(reportError);
   };
   socket.onmessage = event => {
+    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+    if (typeof event.data !== "string" || event.data.length > 131072) {
+      socket.close(1008, "Invalid bridge message");
+      return;
+    }
     try { handleAction(JSON.parse(event.data)).catch(reportError); } catch {}
   };
   socket.onclose = disconnected;
@@ -770,6 +776,17 @@ chrome.windows.onCreated.addListener(() => {
   connect();
 });
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== "object" || sender.id !== chrome.runtime.id) return;
+  const popup = !sender.tab && sender.url === chrome.runtime.getURL("popup.html");
+  const taskPage = sender.tab && sender.frameId === 0 && isFacebook(sender.url);
+  if (!popup && !taskPage) return;
+  const pageCommands = ["fb_avatar_activate", "fb_avatar_submitting", "fb_bridge_active_stopped", "fb_bridge_activity_stats", "fb_bridge_activity_detail"];
+  if (!popup && !pageCommands.includes(msg.cmd)) return;
+  if (pageCommands.includes(msg.cmd) && !taskPage) return;
+  if (msg.cmd === "connection_status" && popup) {
+    sendResponse({connected: ws?.readyState === WebSocket.OPEN});
+    return;
+  }
   if (msg.cmd === "fb_avatar_activate") {
     if (avatarOperation?.tabId !== sender.tab?.id || avatarOperation?.id !== msg.operationId) {
       sendResponse({accepted: false});

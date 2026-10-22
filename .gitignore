@@ -5,3 +5,11 @@
 /release
 *.pyc
 /conf/
+/.audit-venv/
+/audit-install.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/security-audit

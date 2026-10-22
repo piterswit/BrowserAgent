@@ -1,6 +1,6 @@
 # BrowserAgent
 
-当前版本：**v0.8**。
+当前版本：**v0.8.1**。
 
 BrowserAgent 由 Windows 本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求和随机更换头像。
 
@@ -40,20 +40,23 @@ Reels 优先点击可见的“下一条/上一条”按钮，约 6% 的翻页尝
 
 ## 环境与安装
 
-- 本地软件使用 Windows、Python 3.10 或以上版本；浏览器和软件运行在同一台电脑。
+- 本地软件使用 Windows、Python 3.11 或以上版本；浏览器和软件运行在同一台电脑。
 - 扩展要求 Chrome 118 或以上版本。其他 Chromium 浏览器需支持相同扩展 API。
 - 多账号使用独立浏览器用户配置，每个配置加载扩展并登录对应账号。一个配置内的多个标签页共享登录状态，不能当作多个独立账号。
 
 安装依赖并启动本地软件：
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
 python server.py
 ```
 
 浏览器打开 `chrome://extensions/`，开启“开发者模式”，点击“加载已解压的扩展程序”，选择仓库中的 **WS Browser Bridge** 目录。
 
 ## 连接账号
+
+启动本地软件后，在扩展弹窗点击“连接”；无需配对码，后续自动重连。连接状态显示“已连接”后即可使用。软件仅监听本机回环地址，保留浏览器来源和消息参数校验。按开发者确认，本项目用于可信本机环境，连接不做身份认证。
+
 
 1. 先启动本地软件，再在对应浏览器配置中登录 Facebook。
 2. 点击扩展图标，再点击“连接”。也可以访问 `https://www.facebook.com/?fb_bridge_connect_extension`。
@@ -128,13 +131,14 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 | `fbcdn.net`、`fbsbx.com` 主机权限 | 读取 Facebook 头像图片并生成列表缩略图 |
 | 本机主机权限 | 与本地控制软件通信 |
 | `storage`、`alarms` | 保存当前会话的自动启动禁用状态、唤醒重连 |
-| `unlimitedStorage` | 历史保留权限，当前流程不需要大量存储 |
 
 换头像期间浏览器可能显示调试提示。不要在任务页打开开发者工具或取消调试，否则自动上传可能中断。
 
 ## 更新与打包
 
-推送 `v0.8` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件版本一致，否则构建中止。发布包为 `FB_Auto_Active_v0.8.zip`，包含 `FB_server.exe`、`Browser_Extension` 和 README；构建产物位于 CI 的 `release` 目录并上传到 GitHub Releases。用户的 `conf` 配置不会打包，首次运行时在程序目录下创建。
+推送 `v0.8.1` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件版本一致，否则构建中止。发布包为 `FB_Auto_Active_v0.8.1.zip`，包含 `FB_server.exe`、`Browser_Extension` 和 README；构建产物位于 CI 的 `release` 目录并上传到 GitHub Releases。用户的 `conf` 配置不会打包，首次运行时在程序目录下创建。
+
+v0.8.1 保留无需配对的本机连接，修复连接身份隔离，收紧扩展消息和目的地址校验，升级并锁定依赖。安装要求为 Python 3.11 或以上，桌面程序与扩展须同步更新。保留 URL 自动启动功能。
 
 v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、批量头像不重复分配，以及活跃停止和滚动翻页稳定性改进。
 
@@ -152,6 +156,8 @@ python -m PyInstaller --noconfirm --onefile --windowed --name server --specpath 
 ```text
 server.py                        本地界面、账号管理和 WebSocket 服务
 config_store.py                  软件目录定位、头像目录配置读写
+bridge_security.py               本机桥接浏览器来源校验
+requirements.lock               Windows/Python 3.11+ 完整依赖版本与 wheel 哈希
 system_theme.py                  Windows 应用深浅色偏好读取
 server.spec                      本地打包配置
 WS Browser Bridge/
@@ -172,7 +178,7 @@ tests/                          通信和账号识别回归测试
 `offscreen.html` 和 `offscreen.js` 是历史实现，当前 manifest 未启用。
 
 ```powershell
-node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs tests/cancel_requests.test.cjs
+node --test tests/activity.test.cjs tests/activity_interactions.test.cjs tests/avatar_bridge.test.cjs tests/avatar_page.test.cjs tests/cancel_requests.test.cjs tests/bridge_security.test.cjs
 python -m unittest discover -s tests -p 'test_*.py'
 python tools/check_ui.py
 node tools/check_activity_browser.cjs

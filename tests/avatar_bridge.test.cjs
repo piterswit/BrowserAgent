@@ -14,7 +14,8 @@ function bridge(mode, failure, identityError = "") {
   let detached = 0;
   const chrome = {
     windows: {get: async () => ({id: 1, state: "normal"}), update: async () => {}, getAll: async () => [{id: 1, focused: true}], onRemoved: {addListener: fn => windowRemoved.add(fn)}, onCreated: {addListener() {}}},
-    storage: {session: {get: async () => ({}), set: async () => {}}},
+    storage: {local: {setAccessLevel: async () => {}, get: async () => ({}), set: async () => {}},
+      session: {get: async () => ({}), set: async () => {}}},
     alarms: {clear: async () => {}, create: async () => {}, onAlarm: {addListener() {}}},
     tabs: {
       query: async () => [{id: 7, url: "https://www.facebook.com/"}],
@@ -29,7 +30,9 @@ function bridge(mode, failure, identityError = "") {
       onRemoved: {addListener: fn => tabRemoved.add(fn), removeListener: fn => tabRemoved.delete(fn)},
       onUpdated: {addListener: fn => updates.add(fn), removeListener: fn => updates.delete(fn)}
     },
-    runtime: {onMessage: {addListener: fn => runtimeMessages.add(fn)}},
+    runtime: {id: "test-extension", getURL: file => `chrome-extension://test-extension/${file}`,
+      onMessage: {addListener: fn => runtimeMessages.add((msg, sender, respond) => fn(msg,
+        {id: "test-extension", frameId: 0, url: "https://www.facebook.com/", ...sender}, respond))}},
     scripting: {executeScript: async options => {
       if (options.files) return [];
       if (!options.args) return [{result: identityError ? {error: identityError} : identity}];

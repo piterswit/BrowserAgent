@@ -432,11 +432,14 @@ function background() {
     close() { this.readyState = 3; this.onclose?.(); }
   }
   const chrome = {
-    storage: {session: {get: async () => ({...data}), set: async value => Object.assign(data, value)}},
+    storage: {local: {setAccessLevel: async () => {}, get: async () => ({}), set: async () => {}},
+      session: {get: async () => ({...data}), set: async value => Object.assign(data, value)}},
     alarms: {create: async () => {}, clear: async () => {}, onAlarm: {addListener: fn => alarms.push(fn)}},
     windows: {getAll: async () => normalWindows,
       onRemoved: {addListener: fn => windowRemoved.push(fn)}, onCreated: {addListener: fn => windowCreated.push(fn)}},
-    runtime: {onMessage: {addListener: fn => runtimeMessages.push(fn)}},
+    runtime: {id: "test-extension", getURL: file => `chrome-extension://test-extension/${file}`,
+      onMessage: {addListener: fn => runtimeMessages.push((msg, sender, respond) => fn(msg,
+        {id: "test-extension", frameId: 0, url: sender.tab ? "https://www.facebook.com/" : "chrome-extension://test-extension/popup.html", ...sender}, respond))}},
     tabs: {
       query: async () => tabs,
       get: async id => { const tab = tabs.find(t => t.id === id); if (!tab) throw Error("closed"); return tab; },
@@ -456,6 +459,9 @@ function background() {
     setInterval() {}, console});
   vm.runInContext(source("bg.js"), context);
   return {clock, sockets, context, chrome, messages, injected, data, tabs, updates, removed, runtimeMessages, alarms,
+    openConnection(socket = sockets[0]) {
+      socket.readyState = 1; socket.onopen();
+    },
     closeWindows: async () => { normalWindows = []; await windowRemoved[0](); },
     openWindow: () => { normalWindows = [{id: 1}]; windowCreated[0](); }};
 }
@@ -487,7 +493,7 @@ test("the avatar reservation blocks starts before asynchronous stop finishes and
 
 test("busy rejection reports detail without replacing the avatar state with an error", async () => {
   const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   vm.runInContext("avatarBusy = true", b.context);
   await vm.runInContext("handleAction({action:'auto_group'}).catch(reportError)", b.context);
   assert.equal(b.messages.at(-1).type, "activity_detail");
@@ -508,7 +514,7 @@ test("stopTabs cancels a standalone friend-request task before stopping the acti
 
 test("a cancelled friend-request script cannot overwrite a subsequently started task", async () => {
   const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}; navigateActivity = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   const execute = b.chrome.scripting.executeScript;
   let release;
   b.chrome.scripting.executeScript = options => options.files?.includes("cancel_friend_requests.js") ?
@@ -522,7 +528,7 @@ test("a cancelled friend-request script cannot overwrite a subsequently started 
 
 test("a late injection failure cannot replace a newer task's status", async () => {
   const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   const execute = b.chrome.scripting.executeScript;
   let rejectOld;
   b.chrome.scripting.executeScript = options => options.files?.includes("tools.js") && !rejectOld ?
@@ -569,7 +575,7 @@ test("the connect URL refreshes identity on an open socket but not during an ava
   const b = background(); await flush();
   b.context.identityRefreshes = 0;
   vm.runInContext("initializeAccount = async () => { identityRefreshes++; }", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen(); await flush();
+  b.openConnection(); await flush();
   const tab = {...b.tabs[0], url: "https://www.facebook.com/?fb_bridge_connect_extension=1"};
   const open = async () => {
     for (const listener of b.updates) listener(tab.id, {status: "complete"}, tab);
@@ -599,7 +605,7 @@ test("the Connect popup command also retries immediately during backoff", async 
 test("established disconnect reconnects and closing all windows disables retries", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  const socket = b.sockets[0]; socket.readyState = 1; socket.onopen();
+  const socket = b.sockets[0]; b.openConnection(socket);
   socket.close(); await flush();
   await b.clock.advance(5000); assert.equal(b.sockets.length, 2);
   await b.closeWindows(); await b.clock.advance(120000);
@@ -609,7 +615,7 @@ test("established disconnect reconnects and closing all windows disables retries
 test("stop suppresses URL autostart and acknowledges only after all pages stop", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   let release;
   b.chrome.scripting.executeScript = () => new Promise(resolve => { release = resolve; });
   const stopping = vm.runInContext("stopActivity()", b.context); await flush();
@@ -635,7 +641,7 @@ test("stop cancels a pending navigation before its late completion can inject sc
 test("an old session completion cannot overwrite a newer session status", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   await vm.runInContext("startActivity('home')", b.context);
   b.runtimeMessages[0]({cmd: "fb_bridge_active_stopped", runId: "old"}, {tab: {id: 1}});
   assert.equal(b.messages.at(-1).status, "auto_main_page");
@@ -644,7 +650,7 @@ test("an old session completion cannot overwrite a newer session status", async 
 test("natural completion forwards final stats only from the active task tab", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   await vm.runInContext("startActivity('home')", b.context);
   const run = vm.runInContext("activeRun", b.context);
   const stats = {attempted: {like: 2, comment: 1, share: 1}, confirmed: {like: 1, comment: 1, share: 0}};
@@ -665,7 +671,7 @@ test("per-action diagnostics are sanitized and retained by the background", asyn
 test("manual stop uses final page snapshot and never reloads a modern controller", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   await vm.runInContext("startActivity('home')", b.context);
   const run = vm.runInContext("activeRun", b.context);
   const stats = {attempted: {like: 2, comment: 0, share: 0}, confirmed: {like: 2, comment: 0, share: 0}};
@@ -678,7 +684,7 @@ test("manual stop uses final page snapshot and never reloads a modern controller
 test("Reels reinjection carries session totals and checkpoints reject other tabs", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   b.tabs[0].url = "https://www.facebook.com/reel/123";
   await vm.runInContext("startActivity('reels')", b.context);
   const run = vm.runInContext("activeRun", b.context);
@@ -700,7 +706,7 @@ test("stop covers inactive Facebook pages and skips unrelated sites", async () =
 test("a failed stop does not report idle", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   b.chrome.scripting.executeScript = async () => { throw Error("permission denied"); };
   await vm.runInContext("handleAction({action: 'stop_scroll'}).catch(reportError)", b.context);
   assert.equal(b.messages.at(-1).status, "activity_error");
@@ -732,7 +738,7 @@ test("custom activity stays on the chosen Facebook page", async () => {
 test("failed bootstrap is not reported as active just because file injection completed", async () => {
   const b = background(); await flush();
   vm.runInContext("initializeAccount = async () => {}", b.context);
-  b.sockets[0].readyState = 1; b.sockets[0].onopen();
+  b.openConnection();
   b.chrome.scripting.executeScript = async options => {
     b.injected.push(options);
     return [{result: options.func?.name === "readActivityState" ? {running: false, detail: "test bootstrap failure"} : false}];

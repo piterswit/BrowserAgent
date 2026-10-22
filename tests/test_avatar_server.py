@@ -42,6 +42,7 @@ class AvatarServerTest(unittest.TestCase):
         self.app._remove_client_ui = lambda cid: None
 
     def test_socket_close_immediately_removes_account(self):
+        self.app.clients = {}
         async def messages():
             yield json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"})
         class Socket:
@@ -66,6 +67,33 @@ class AvatarServerTest(unittest.TestCase):
         with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
             self.app.auto_custom()
         self.assertEqual(sent, [("a", {"action": "auto_custom"})])
+
+    def test_duplicate_id_cannot_replace_an_existing_connection(self):
+        legitimate = self.app.clients["a"]
+        closed = []
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "a"})
+        class Socket:
+            def __aiter__(self): return messages()
+            async def close(self, **kwargs): closed.append(kwargs["code"])
+        asyncio.run(self.app.ws_handler(Socket(), 8765))
+        self.assertEqual(closed, [1008])
+        self.assertIs(self.app.clients["a"], legitimate)
+
+    def test_connection_cannot_switch_ids_or_leave_an_orphan(self):
+        self.app.clients = {}
+        self.app.register_client_ui = lambda *args: None
+        closed = []
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "first"})
+            yield json.dumps({"type": "init", "client_id": "second"})
+        class Socket:
+            def __aiter__(self): return messages()
+            async def close(self, **kwargs): closed.append(kwargs["code"])
+        asyncio.run(self.app.ws_handler(Socket(), 8765))
+        self.assertEqual(closed, [1008])
+        self.assertFalse(self.app.clients)
+        self.assertFalse(self.app.accounts)
 
     def test_busy_account_does_not_receive_new_activity_commands(self):
         sent, details = [], []
@@ -170,6 +198,7 @@ class AvatarServerTest(unittest.TestCase):
         self.assertFalse(self.foreground_permissions)
 
     def test_activity_pause_reason_reaches_the_result_column(self):
+        self.app.clients = {}
         details = []
         self.app.register_client_ui = lambda *args: None
         self.app.set_activity_detail = lambda cid, detail: details.append((cid, detail))
@@ -244,6 +273,7 @@ class AvatarServerTest(unittest.TestCase):
         self.assertEqual(details[0].count("未找到点赞入口"), 1)
 
     def test_stop_message_displays_counts_after_setting_idle(self):
+        self.app.clients = {}
         events = []
         self.app.register_client_ui = lambda *args: None
         self.app.set_status = lambda cid, status: events.append(status)
@@ -283,6 +313,7 @@ class AvatarServerTest(unittest.TestCase):
         self.assertIn("未收到停止确认", errors[0][1])
 
     def test_real_websocket_disconnect_removes_account(self):
+        self.app.clients = {}
         import websockets
         ready = asyncio.Event()
         self.app.register_client_ui = lambda *args: ready.set()
@@ -303,6 +334,7 @@ class AvatarServerTest(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_old_connection_cannot_remove_replacement(self):
+        self.app.clients = {}
         replacement = object()
         async def messages():
             yield json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"})
