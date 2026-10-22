@@ -28,11 +28,47 @@
     [...node.querySelectorAll(`[data-ad-rendering-role="${kind}_button"]`)]
       .some(marker => marker.closest('[role="button"], button') === node);
   const isAction = (node, kind) => matches(node, labels[kind]) || hasActionMarker(node, kind);
-  const actionButtons = (scope, kind) => buttons(scope).filter(node => isAction(node, kind));
+  const actionButtons = (scope, kind) => {
+    const found = new Set(buttons(scope).filter(node => isAction(node, kind)));
+    if (!["like", "comment", "share"].includes(kind)) return [...found];
+    for (const marker of scope.querySelectorAll(`[data-ad-rendering-role="${kind}_button"]`)) {
+      if (marker.closest('[role="button"], button')) continue;
+      // Some feed layouts use a plain div around a marker and its action label.
+      for (let node = marker.parentElement, depth = 0; node && node !== scope && depth < 4; node = node.parentElement, depth++) {
+        if (node.closest('[role="article"]') !== scope) break;
+        const markers = ["like", "comment", "share"].flatMap(action =>
+          [...node.querySelectorAll(`[data-ad-rendering-role="${action}_button"]`)]);
+        if (markers.length !== 1) break;
+        if (visible(node) && matches(node, labels[kind])) { found.add(node); break; }
+      }
+    }
+    return [...found];
+  };
   // An icon/counter alone says nothing about whether the current user already liked it.
   const unliked = node => isAction(node, "like") && !liked(node) &&
     (matches(node, labels.like) || ["aria-pressed", "aria-checked"].some(name => node.getAttribute(name) === "false"));
   const findButton = (scope, pattern) => buttons(scope).find(node => matches(node, pattern));
+  const findStoryOption = scope => {
+    const enabled = node => {
+      if (!visible(node) || !window.__fbActivityRuntime.visible(node)) return false;
+      for (let parent = node; parent && scope.contains(parent); parent = parent.parentElement) {
+        if (parent.disabled || parent.getAttribute("aria-disabled") === "true") return false;
+        if (parent === scope) break;
+      }
+      return true;
+    };
+    const controls = [...scope.querySelectorAll('[role="button"], button, [role="menuitem"]')];
+    const semantic = controls.find(node => enabled(node) && matches(node, labels.story));
+    if (semantic) return semantic;
+    const options = [...scope.querySelectorAll("span, div")].filter(node => {
+      if (!enabled(node) || !matches(node, labels.story) ||
+          !/^(Share to |分享到|分享至)/i.test(text(node))) return false;
+      if (node.closest('h1, h2, h3, h4, h5, h6, [role="heading"], a[href], input, textarea, [contenteditable="true"]')) return false;
+      return ![...node.children].some(child => matches(child, labels.story));
+    });
+    // Text-only menus have no semantic click target; use one unambiguous leaf so the click bubbles.
+    return options.length === 1 ? options[0] : null;
+  };
   const scopeVisible = node => window.__fbActivityRuntime.visible(node);
   const overlays = () => [...document.querySelectorAll('[role="dialog"], [role="menu"]')].filter(scopeVisible);
   const history = window.__fbInteractionHistory ||= new Map();
@@ -62,8 +98,8 @@
     const counts = {like: 0, comment: 0, share: 0, join: 0};
     const home = ctrl.mode === "home";
     const reels = window.__fbActivityRequest?.mode === "reels";
-    const limits = {like: reels ? 2 : 3, comment: 2, share: home ? 1 : 2, join: 1};
-    const homePlan = ["like", "comment", "like", "share", "comment", "like"];
+    const limits = {like: reels ? 2 : home ? 5 : 3, comment: 2, share: home ? 1 : 2, join: 1};
+    const homePlan = ["like", "comment", "like", "share", "like", "comment", "like", "like"];
     let planIndex = 0;
     const scanIssues = {};
     const recordAttempt = (kind, item) => {
@@ -81,6 +117,7 @@
     const reservation = (item, kind) => item.key ? kind + ":" + item.key : item.button;
     let nextAttempt = Date.now() + (home ? random(20000, 30000) : random(30000, 50000));
     const ownedOverlays = new Set();
+    const closeAttempts = new WeakMap();
     function adoptOverlay(scope) {
       if (!window.__fbActivityRuntime.isProtectedOverlay(scope)) {
         ownedOverlays.add(scope); ctrl.interactionScopes.add(scope);
@@ -90,7 +127,7 @@
     let pendingNotification = null;
     const draft = node => (node.value || node.innerText || "").trim();
     const editors = scope => [...scope.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')];
-    const closeWords = /^(Close|Close dialog|关闭|關閉)$/i;
+    const closeWords = /^(Close(?: (?:dialog|window|popup|post|comments?))?|关闭(?:窗口|弹窗|对话框|帖子|评论)?|關閉(?:視窗|彈窗|對話方塊|貼文|帖子|評論|留言)?)$/i;
     let nextNotifications = Date.now() + random(45000, 90000), notificationVisits = 0;
     function cleanupDrafts() {
       for (const [editor, {scope, value, lastInput}] of pendingDrafts) {
@@ -132,11 +169,24 @@
         pendingNotification = null;
       }
       for (const scope of ownedOverlays) {
-        if (!scopeVisible(scope)) { ownedOverlays.delete(scope); continue; }
+        if (window.__fbActivityRuntime.hasProtectedOverlay()) { ctrl.canAct(); return; }
+        if (!scopeVisible(scope)) { ownedOverlays.delete(scope); closeAttempts.delete(scope); continue; }
         if (editors(scope).some(node => draft(node))) continue;
-        const close = findButton(scope, closeWords);
-        if (close) { close.click(); ownedOverlays.delete(scope); }
-        else if (scope.dispatchEvent) scope.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", code: "Escape", bubbles: true}));
+        const attempt = closeAttempts.get(scope) || {count: 0, at: -Infinity};
+        if (attempt.count >= 3 || Date.now() - attempt.at < 1500) continue;
+        const close = buttons(scope).find(node => matches(node, closeWords) &&
+          node.closest('[role="dialog"], [role="menu"]') === scope);
+        ctrl.guard();
+        closeAttempts.set(scope, {count: attempt.count + 1, at: Date.now()});
+        if (close) close.click();
+        else if (scope.dispatchEvent) {
+          for (const type of ["keydown", "keyup"]) {
+            ctrl.guard();
+            scope.dispatchEvent(new KeyboardEvent(type, {key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+          }
+        }
+        // A click is not proof that the popup closed; retry only while it remains visible.
+        if (!scopeVisible(scope)) { ownedOverlays.delete(scope); closeAttempts.delete(scope); }
       }
     }
     function maintainPage() {
@@ -278,31 +328,47 @@
         ctrl.noteInteractionIssue("帖子已有未发送草稿", "comment"); return false;
       }
       const previous = new Set(overlays());
-      await click(item.button, null, null, () => identity(item.scope, "comment") === item.key);
-      let scope = item.scope;
-      const commentOverlay = node => {
-        if (chatScope(node) || window.__fbActivityRuntime.isProtectedOverlay(node)) return false;
-        const key = identity(node, "comment");
-        if (key) return key === item.key;
-        const names = [node.getAttribute("aria-label"),
-          ...[...node.querySelectorAll('[role="heading"], h1, h2')].map(text)];
-        return names.some(value => /comments?|评论|評論|留言/i.test(value || "")) ||
-          editors(node).some(editor => /comments?|评论|評論|留言/i.test(editor.getAttribute("aria-label") || "")) ||
-          !!findButton(node, /^(Post comment|Send comment|Submit comment|发表评论|发布评论|發佈留言|發表留言|送出留言)$/i);
-      };
-      const editor = await waitFor(() => {
-        scope = overlays().find(node => !previous.has(node) && commentOverlay(node)) || item.scope;
-        if (scope !== item.scope) adoptOverlay(scope);
-        return [...scope.querySelectorAll(selector)].find(visible);
-      }, () => scope);
-      if (!editor || (editor.value || editor.innerText || "").trim()) {
-        ctrl.noteInteractionIssue(editor ? "评论框已有草稿" : "点击评论后未找到可见的评论框", "comment"); return false;
-      }
+      let scope = item.scope, editor = null;
       const value = comments[Math.floor(Math.random() * comments.length)];
       const lastInput = ctrl.lastInput;
-      if (scope !== item.scope) adoptOverlay(scope);
       let inserted = false, submitted = false;
+      const base = new URL(location.href);
+      const route = home ? {
+        busy: true, expires: 0,
+        allows(href, path) {
+          try {
+            const url = new URL(href);
+            if (url.origin !== base.origin || url.pathname !== path) return false;
+            if (url.pathname === base.pathname) return true;
+            const match = url.pathname.match(/\/(posts|videos|permalink)\/([^/]+)/);
+            const id = match?.[2] || (url.pathname === "/permalink.php" ? url.searchParams.get("story_fbid") : null);
+            return !!id && id === item.key?.slice(item.key.indexOf(":") + 1);
+          } catch { return false; }
+        }
+      } : null;
       try {
+        await click(item.button, null, null, () => identity(item.scope, "comment") === item.key, () => {
+          if (route) { route.expires = Date.now() + 45000; ctrl.commentNavigation = route; }
+        });
+        const commentOverlay = node => {
+          if (chatScope(node) || window.__fbActivityRuntime.isProtectedOverlay(node)) return false;
+          const key = identity(node, "comment");
+          if (key) return key === item.key;
+          const names = [node.getAttribute("aria-label"),
+            ...[...node.querySelectorAll('[role="heading"], h1, h2')].map(text)];
+          return names.some(value => /comments?|评论|評論|留言/i.test(value || "")) ||
+            editors(node).some(editor => /comments?|评论|評論|留言/i.test(editor.getAttribute("aria-label") || "")) ||
+            !!findButton(node, /^(Post comment|Send comment|Submit comment|发表评论|发布评论|發佈留言|發表留言|送出留言)$/i);
+        };
+        editor = await waitFor(() => {
+          scope = overlays().find(node => !previous.has(node) && commentOverlay(node)) || item.scope;
+          if (scope !== item.scope) adoptOverlay(scope);
+          return [...scope.querySelectorAll(selector)].find(visible);
+        }, () => scope);
+        if (!editor || (editor.value || editor.innerText || "").trim()) {
+          ctrl.noteInteractionIssue(editor ? "评论框已有草稿" : "点击评论后未找到可见的评论框", "comment"); return false;
+        }
+        if (scope !== item.scope) adoptOverlay(scope);
         check(scope);
         editor.focus();
         await ctrl.sleep(random(1500, 3000));
@@ -317,13 +383,30 @@
           ctrl.noteInteractionIssue("评论内容或目标帖子发生变化，未提交", "comment"); return false;
         }
         const sendWords = /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i;
-        let parent = editor.parentElement, send;
-        for (let depth = 0; parent && scope.contains(parent) && depth < 8; depth++, parent = parent.parentElement) {
-          const localEditors = editors(parent).filter(visible);
-          if (localEditors.length !== 1 || localEditors[0] !== editor) break;
-          const submit = [...parent.querySelectorAll('[id="focused-state-composer-submit"]')];
-          send = submit.map(node => findButton(node, sendWords)).find(Boolean) || findButton(parent, sendWords);
-          if (send || parent === scope) break;
+        const locateSend = () => {
+          for (let parent = editor.parentElement, depth = 0; parent && scope.contains(parent) && depth < 8; depth++, parent = parent.parentElement) {
+            const localEditors = editors(parent).filter(visible);
+            if (localEditors.length !== 1 || localEditors[0] !== editor) break;
+            const submit = [...parent.querySelectorAll('[id="focused-state-composer-submit"]')];
+            const targets = [...new Set([...submit.flatMap(node => [...node.querySelectorAll('[role="button"], button')]),
+              ...parent.querySelectorAll('[role="button"], button')])].filter(node => matches(node, sendWords));
+            if (targets.length) return {send: targets.find(visible), pending: true};
+            if (parent === scope) break;
+          }
+          return {send: null, pending: false};
+        };
+        let send, pending;
+        for (let elapsed = 0; elapsed <= 3000; elapsed += 300) {
+          check(scope, editor);
+          if (draft(editor) !== value || identity(item.scope, "comment") !== item.key) {
+            ctrl.noteInteractionIssue("等待发送时评论内容或目标帖子发生变化，未提交", "comment"); return false;
+          }
+          ({send, pending} = locateSend());
+          if (send || elapsed === 3000) break;
+          await ctrl.sleep(300);
+        }
+        if (!send && pending) {
+          ctrl.noteInteractionIssue("已填写评论，但发送按钮仍不可用，未提交", "comment"); return false;
         }
         if (send) await click(send, scope, editor, () => draft(editor) === value && identity(item.scope, "comment") === item.key, () => recordAttempt("comment", item));
         else {
@@ -338,16 +421,20 @@
           if (!draft(editor)) { submitted = true; ctrl.recordInteraction("comment", true); break; }
           if (draft(editor) !== value) break;
         }
-        if (!submitted) ctrl.report("评论提交未确认：本次不重发，恢复浏览");
+        if (!submitted) {
+          ctrl.noteInteractionIssue(send ? "已点击发送，但评论未确认，本次不重发" : "未找到发送按钮，Enter 提交未确认，本次不重发", "comment");
+          ctrl.report("评论提交未确认：本次不重发，恢复浏览");
+        }
         return submitted;
       } finally {
+        if (route) route.busy = false;
         // Never erase a user's edit, retry an uncertain submission, or act after Stop.
         if (ctrl.run && inserted && !submitted && editor.isConnected && draft(editor) === value) {
           pendingDrafts.set(editor, {scope, value, lastInput});
         }
         if (ctrl.pageAvailable() && !ctrl.userInputChanged(lastInput)) {
           cleanupDrafts();
-          if (!draft(editor) && document.activeElement === editor) editor.blur();
+          if (editor && !draft(editor) && document.activeElement === editor) editor.blur();
           safeCleanup();
         }
       }
@@ -357,7 +444,7 @@
       await click(item.button, null, null, () => identity(item.scope, "share") === item.key);
       const menu = await openedOverlay(previous);
       if (!menu) { ctrl.noteInteractionIssue("点击分享后未识别分享菜单", "share"); return; }
-      const option = findButton(menu, labels.story);
+      const option = findStoryOption(menu);
       if (!option) { ctrl.noteInteractionIssue("分享菜单没有可见的快拍入口", "share"); return; }
       const previousMessages = new Map([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => [node, text(node)]));
       const successNotice = () => [...document.querySelectorAll('[role="alert"], [role="status"]')].filter(visible)
@@ -365,7 +452,8 @@
       const beforeStory = new Set(overlays());
       const beforeText = texts(menu).join("\n");
       // Selecting this entry may publish immediately; never submit it twice to find out.
-      await click(option, menu, null, () => identity(item.scope, "share") === item.key, () => recordAttempt("share", item));
+      await click(option, menu, null, () => identity(item.scope, "share") === item.key && findStoryOption(menu) === option,
+        () => recordAttempt("share", item));
       let composer;
       const next = await waitFor(() => {
         if (successNotice()) return "confirmed";
@@ -460,7 +548,7 @@
           ctrl.noteInteractionIssue(reason);
           return false;
         }
-        nextAttempt = Date.now() + (home ? random(35000, 45000) : random(60000, 100000));
+        nextAttempt = Date.now() + (home ? random(25000, 35000) : random(60000, 100000));
         let choice;
         if (home) {
           for (let offset = 0; offset < homePlan.length; offset++) {

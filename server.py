@@ -55,6 +55,7 @@ class App:
             self.root.iconphoto(True, self.window_icon)
             self.header_icon = tk.PhotoImage(file=str(icon_folder / "bridge-32.png"))
         if (icon_folder / "bridge.ico").exists():
+            self.root.iconbitmap(str(icon_folder / "bridge.ico"))
             self.root.iconbitmap(default=str(icon_folder / "bridge.ico"))
         self.default_avatar = tk.PhotoImage(file=str(icon_folder / "avatar-placeholder.png")) if (icon_folder / "avatar-placeholder.png").exists() else tk.PhotoImage(width=36, height=36)
         self.avatar_photos = {}
@@ -697,7 +698,7 @@ class App:
 
 def main():
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
-    root = tb.Window(themename=system_theme_name())
+    root = tb.Window(themename=system_theme_name(), iconphoto=None)
     App(root)
     root.mainloop()
 

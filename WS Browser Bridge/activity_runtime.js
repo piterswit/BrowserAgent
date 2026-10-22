@@ -1,5 +1,5 @@
 (() => {
-  const version = 11;
+  const version = 12;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -63,10 +63,15 @@
         run: true, started: false, runId: request.runId, mode, unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
         deadline: mode === "reels" ? null : Date.now() + 5 * 60 * 1000,
         interactionScopes: new Set(),
+        commentNavigation: null,
         sessionActive() {
           if (!this.run) return false;
           const sameViewer = mode === "reels" && /^\/reels?(\/|$)/.test(location.pathname);
-          if (this.deadline !== null && Date.now() >= this.deadline || location.pathname !== path && !sameViewer) this.stop(true);
+          const navigation = this.commentNavigation;
+          if (navigation && !navigation.busy && location.pathname === path) this.commentNavigation = null;
+          const ownComment = mode === "home" && navigation && Date.now() < navigation.expires &&
+            navigation.allows(location.href, location.pathname);
+          if (this.deadline !== null && Date.now() >= this.deadline || location.pathname !== path && !sameViewer && !ownComment) this.stop(true);
           return this.run;
         },
         pageAvailable() { return this.sessionActive() && !document.hidden && document.readyState !== "loading"; },
@@ -166,6 +171,9 @@
           if (document.hidden) reason = "等待：目标页面不可见，恢复可见后继续";
           else if (document.readyState === "loading") reason = "等待：页面加载完成后继续";
           else if (this.recentUserInput()) reason = "暂停：等待用户操作结束";
+          else if (!scope && this.commentNavigation && !this.commentNavigation.busy && location.pathname !== path) {
+            reason = "等待：评论弹框关闭并返回首页后继续";
+          }
           else {
             const result = this.dismissOverlays(scope);
             if (result.blocked) reason = result.blocked;
@@ -228,6 +236,7 @@
           if (!this.run) return;
           window.__fbActivityLastSnapshot = {runId: this.runId, stats: this.snapshotStats()};
           this.run = false;
+          this.commentNavigation = null;
           this.interactionScopes.clear();
           for (const [id, reject] of pending) { clearTimeout(id); reject(abort()); }
           pending.clear();

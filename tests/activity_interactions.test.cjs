@@ -95,8 +95,8 @@ test("already-liked buttons are never toggled off, including state changes durin
   await p.clock.advance(4000); assert.equal(await promise, false);
   assert.equal(p.clicks.length, 0);
 });
-test("the per-session like budget applies even to different posts", async () => {
-  const p = setup("like"), first = await p.start();
+test("the non-home per-session like budget applies even to different posts", async () => {
+  const p = setup("like", "group"), first = await p.start();
   await p.clock.advance(4000); await first.promise;
   p.anchor.href = "https://www.facebook.com/alice/posts/456";
   p.button.isConnected = false;
@@ -114,23 +114,26 @@ test("the per-session like budget applies even to different posts", async () => 
   assert.equal(await p.interactions.maybeInteract(["like"]), false);
 });
 
-test("updated feed budgets and shorter cooldown allow three distinct likes", async () => {
+test("home allows five distinct likes but never a sixth within the session", async () => {
   const p = setup("like");
-  assert.deepEqual({...p.interactions.limits}, {like: 3, comment: 2, share: 1, join: 1});
-  for (let i = 0; i < 3; i++) {
+  assert.deepEqual({...p.interactions.limits}, {like: 5, comment: 2, share: 1, join: 1});
+  for (let i = 0; i < 5; i++) {
     p.anchor.href = `https://www.facebook.com/alice/posts/${i}`;
     if (i) { p.button.isConnected = false; p.button = p.article.add(new p.Node("button", "Like")); }
-    await p.clock.advance(i ? 60000 : 30000);
+    await p.clock.advance(i ? 35000 : 30000);
     const attempt = p.interactions.maybeInteract(["like"]);
     await p.clock.advance(4000);
     assert.equal(await attempt, true);
   }
-  await p.clock.advance(60000);
+  p.anchor.href = "https://www.facebook.com/alice/posts/sixth";
+  p.button.isConnected = false; p.article.add(new p.Node("button", "Like"));
+  await p.clock.advance(35000);
+  assert.equal(p.ctrl.run, true);
   assert.equal(await p.interactions.maybeInteract(["like"]), false);
-  assert.equal(p.clicks.length, 3);
+  assert.equal(p.clicks.length, 5);
 });
 
-test("home distributes six eligible interactions as three likes, two comments and one share within five minutes", async () => {
+test("home distributes eight eligible interactions as five likes, two comments and one share within five minutes", async () => {
   const p = setup("like"), order = [];
   const menu = new p.Node("menu"), composer = new p.Node("dialog");
   const story = menu.add(new p.Node("button", "Share to your story (Friends)"));
@@ -141,7 +144,7 @@ test("home distributes six eligible interactions as three likes, two comments an
     p.document.alerts.push(new p.Node("alert", "Your story was shared"));
   };
   let previous = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     for (const node of previous) node.isConnected = false;
     p.button.isConnected = false;
     p.anchor.href = `https://www.facebook.com/alice/posts/test-${i}`;
@@ -157,12 +160,12 @@ test("home distributes six eligible interactions as three likes, two comments an
     const attempt = p.interactions.maybeInteract();
     await p.clock.advance(10000); await attempt;
   }
-  assert.deepEqual(order, ["like", "comment", "like", "share", "comment", "like"]);
-  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 3, comment: 2, share: 1});
+  assert.deepEqual(order, ["like", "comment", "like", "share", "like", "comment", "like", "like"]);
+  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 5, comment: 2, share: 1});
   assert.equal(p.ctrl.run, true);
   await p.clock.advance(45000);
   assert.equal(await p.interactions.maybeInteract(), false);
-  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 3, comment: 2, share: 1});
+  assert.deepEqual({...p.ctrl.stats.confirmed}, {like: 5, comment: 2, share: 1});
 });
 
 for (const mode of ["group", "custom", "reels"]) {
@@ -187,6 +190,29 @@ for (const label of ["Post comment", "发表评论", "發佈留言"]) {
     assert.equal(p.ctrl.stats.confirmed.comment, 1);
   });
 }
+
+test("a delayed enabled comment send button is awaited instead of synthetic Enter", async () => {
+  const p = setup("comment"), editor = p.article.add(new p.Node("editor"));
+  const send = p.article.add(new p.Node("button", "Post comment")); send.disabled = true;
+  send.onclick = () => { editor.innerText = ""; };
+  p.clock.setTimeout(() => { send.disabled = false; }, 50000);
+  const {promise} = await p.start(); await p.clock.advance(15000);
+  assert.equal(await promise, true);
+  assert.deepEqual(p.clicks, ["Comment", "Post comment"]);
+  assert.equal(p.keys.filter(type => type === "keydown").length, 0);
+});
+
+test("a disabled explicit comment send button is not bypassed with Enter", async () => {
+  const p = setup("comment"), editor = p.article.add(new p.Node("editor"));
+  editor.isContentEditable = true;
+  const send = p.article.add(new p.Node("button", "Post comment")); send.disabled = true;
+  const {promise} = await p.start(); await p.clock.advance(15000);
+  assert.equal(await promise, false);
+  assert.deepEqual(p.clicks, ["Comment"]);
+  assert.equal(p.keys.filter(type => type === "keydown").length, 0);
+  assert.equal(p.ctrl.stats.attempted.comment, 0);
+  assert.match(p.ctrl.stats.issues.comment, /发送按钮/);
+});
 
 test("ignored Enter clears only the automation draft and resumes browsing without retry", async () => {
   const p = setup("comment"), editor = p.article.add(new p.Node("editor"));
@@ -576,6 +602,40 @@ test("a pending share menu is not dismissed when its confirmation dialog opens b
   assert.equal(p.ctrl.interactionScopes.size, 0);
 });
 
+for (const outcome of ["sent", "missing-editor", "ignored-send"]) {
+  test(`home comment route change (${outcome}) does not end the session`, async () => {
+    const p = setup("comment"), popup = new p.Node("dialog"); popup.attributes["aria-label"] = "Comments";
+    if (outcome !== "missing-editor") {
+      const editor = popup.add(new p.Node("editor")); editor.isContentEditable = true;
+      if (outcome === "ignored-send") editor.dispatchEvent = () => {};
+    }
+    popup.add(new p.Node("button", "Close")).onclick = () => {
+      popup.isConnected = false; p.document.overlays = [];
+      p.location.href = "https://www.facebook.com/"; p.location.pathname = "/";
+    };
+    p.button.onclick = () => {
+      p.document.overlays = [popup];
+      p.location.href = "https://www.facebook.com/alice/posts/123";
+      p.location.pathname = "/alice/posts/123";
+    };
+    const {promise} = await p.start(); await p.clock.advance(15000);
+    assert.equal(await promise, outcome === "sent");
+    assert.equal(p.ctrl.run, true); assert.equal(p.ctrl.canAct(), true);
+    assert.equal(p.location.pathname, "/"); assert.equal(p.ctrl.commentNavigation, null);
+    assert.equal(p.ctrl.stats.confirmed.comment, Number(outcome === "sent"));
+  });
+}
+
+test("opening a different post during Comment still stops the session", async () => {
+  const p = setup("comment");
+  p.button.onclick = () => {
+    p.location.href = "https://www.facebook.com/alice/posts/other";
+    p.location.pathname = "/alice/posts/other";
+  };
+  const {promise} = await p.start(); await p.clock.advance(10000);
+  await assert.rejects(promise, {name: "AbortError"}); assert.equal(p.ctrl.run, false);
+});
+
 test("a comment dialog taller than the viewport is accepted when its editor is visible", async () => {
   const p = setup("comment"), dialog = new p.Node("dialog");
   dialog.attributes["aria-label"] = "Comments";
@@ -674,6 +734,47 @@ test("failed comments close their own empty overlay, never a pre-existing user d
   assert.equal(await promise, false);
   assert.deepEqual(p.clicks, ["Comment", "Close"]);
   assert.equal(p.ctrl.canAct(), true);
+});
+
+for (const closeLabel of ["Close post", "关闭帖子", "關閉貼文"]) {
+  for (const failure of ["missing-editor", "disabled-send", "unconfirmed-send"]) {
+    test(`${closeLabel}: closes the owned comment dialog after ${failure}`, async () => {
+      const p = setup("comment"), dialog = new p.Node("dialog");
+      dialog.attributes["aria-label"] = "Comments";
+      let editor;
+      if (failure !== "missing-editor") {
+        editor = dialog.add(new p.Node("editor")); editor.isContentEditable = true;
+        editor.dispatchEvent = () => {};
+        const send = dialog.add(new p.Node("button", "发布评论"));
+        send.attributes["aria-disabled"] = failure === "disabled-send" ? "true" : "false";
+      }
+      dialog.add(new p.Node("button", closeLabel)).onclick = () => {
+        dialog.isConnected = false; p.document.overlays = [];
+      };
+      p.button.onclick = () => p.document.overlays.push(dialog);
+      const {promise} = await p.start(); await p.clock.advance(18000);
+      assert.equal(await promise, false);
+      assert.equal(dialog.isConnected, false);
+      assert.equal(editor?.innerText || "", "");
+      assert.equal(p.ctrl.stats.confirmed.comment, 0);
+      assert.equal(p.ctrl.stats.attempted.comment, Number(failure === "unconfirmed-send"));
+      assert.equal(p.clicks.filter(label => label === closeLabel).length, 1);
+    });
+  }
+}
+
+test("a close click which leaves the owned comment dialog open is retried, with a cooldown", async () => {
+  const p = setup("comment"), dialog = new p.Node("dialog"); dialog.attributes["aria-label"] = "Comments";
+  let closes = 0;
+  dialog.add(new p.Node("button", "Close")).onclick = () => {
+    if (++closes === 2) { dialog.isConnected = false; p.document.overlays = []; }
+  };
+  p.button.onclick = () => p.document.overlays.push(dialog);
+  const {promise} = await p.start(); await p.clock.advance(8000); await promise;
+  assert.equal(closes, 1);
+  p.interactions.maintainPage(); assert.equal(closes, 1);
+  await p.clock.advance(1500); p.interactions.maintainPage();
+  assert.equal(closes, 2); assert.equal(dialog.isConnected, false);
 });
 
 test("a chat appearing during Comment is never adopted as the comment editor", async () => {

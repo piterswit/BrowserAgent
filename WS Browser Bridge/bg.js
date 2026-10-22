@@ -808,7 +808,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (action) handleAction({action}).catch(reportError);
   }
 });
-chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+async function readCommentNavigationState(run) {
+  try {
+    const [result] = await chrome.scripting.executeScript({target: {tabId: run.tabId},
+      func: function readCommentNavigation(runId) {
+        const ctrl = window.__fbActivityCtrl;
+        const running = !!(ctrl?.run && ctrl.runId === runId);
+        const navigation = running && ctrl.commentNavigation;
+        return {running, allowed: !!(navigation && Date.now() < navigation.expires &&
+          navigation.allows(location.href, location.pathname))};
+      }, args: [run.runId]});
+    return result?.result || {};
+  } catch { return {}; }
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (activeRun?.tabId === tabId && activeRun.mode === "reels" &&
       (info.url || info.status === "complete") && !isReelsUrl(info.url || tab.url)) {
     stopActivity().catch(reportError);
@@ -819,8 +833,23 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
       activeRun.needsResume = true;
       return;
     }
+    const run = activeRun;
+    if (run.mode === "home") {
+      run.checkCommentNavigation = true;
+      const state = await readCommentNavigationState(run);
+      if (activeRun !== run) return;
+      if (state.allowed) return;
+    }
     stopActivity().catch(reportError);
     return;
+  }
+  if (info.status === "complete" && activeRun?.tabId === tabId && activeRun.checkCommentNavigation) {
+    const run = activeRun;
+    const state = await readCommentNavigationState(run);
+    if (activeRun !== run) return;
+    run.checkCommentNavigation = false;
+    // Only keep a same-document dialog transition; never replay a comment after a full reload.
+    if (!state.running) { stopActivity().catch(reportError); return; }
   }
   if (info.status !== "complete" || taskTabs.has(tabId) || !isFacebook(tab.url)) return;
   const url = new URL(tab.url);

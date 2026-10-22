@@ -33,14 +33,31 @@ def check_caption(root, theme):
         assert caption.value == (0x00222222 if theme == "darkly" else 0xFFFFFFFF)
 
 
+def native_window_icons(root):
+    root.update_idletasks()
+    ancestor = ctypes.windll.user32.GetAncestor
+    ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    ancestor.restype = ctypes.c_void_p
+    window = ancestor(root.winfo_id(), 2)
+    send_message = ctypes.windll.user32.SendMessageW
+    send_message.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    send_message.restype = ctypes.c_ssize_t
+    # Tk's iconbitmap getter returns an empty string on Windows; query the native handles instead.
+    return tuple(send_message(window, 0x007F, size, 0) for size in (0, 1))
+
+
 def main():
     server.App.scan = lambda self: None
     root = server.tb.Window(themename="flatly")
     try:
+        original_icons = native_window_icons(root)
         with patch.object(server, "system_theme_name", return_value="darkly"):
             app = server.App(root)
         root.update()
         check_caption(root, "darkly")
+        icons = native_window_icons(root)
+        assert all(icons), "Missing native small or large window icon"
+        assert all(current != original for current, original in zip(icons, original_icons)), "Default native icon was not replaced"
         table_style = app.list_view.cget("style")
         assert table_style == "Accounts.Treeview"
         assert int(root.style.lookup(table_style, "rowheight")) == 40

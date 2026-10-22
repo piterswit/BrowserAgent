@@ -741,6 +741,36 @@ test("failed bootstrap is not reported as active just because file injection com
   assert.equal(b.messages.at(-1).status, "activity_error");
   assert.match(b.messages.at(-1).error, /bootstrap failure/);
 });
+for (const scenario of ["same-document", "full-reload", "unrelated-navigation"]) {
+  test(`home comment loading event: ${scenario}`, async () => {
+    const b = background(); await flush();
+    await vm.runInContext("startActivity('home')", b.context);
+    const run = vm.runInContext("activeRun", b.context), injections = b.injected.filter(item => item.files).length;
+    const execute = b.chrome.scripting.executeScript;
+    let loading = true;
+    b.chrome.scripting.executeScript = async options => options.func?.name === "readCommentNavigation" ?
+      [{result: {running: loading || scenario !== "full-reload", allowed: scenario !== "unrelated-navigation"}}] : execute(options);
+    b.tabs[0].url = "https://www.facebook.com/alice/posts/123";
+    for (const listener of b.updates) await listener(1, {status: "loading"}, b.tabs[0]);
+    loading = false;
+    for (const listener of b.updates) await listener(1, {status: "complete"}, b.tabs[0]);
+    await flush();
+    assert.equal(vm.runInContext("activeRun", b.context), scenario === "same-document" ? run : null);
+    assert.equal(b.injected.filter(item => item.files).length, injections);
+  });
+}
+
+test("Stop during a comment-navigation check cannot revive the old home task", async () => {
+  const b = background(); await flush(); await vm.runInContext("startActivity('home')", b.context);
+  const execute = b.chrome.scripting.executeScript; let resolveCheck;
+  b.chrome.scripting.executeScript = options => options.func?.name === "readCommentNavigation" ?
+    new Promise(resolve => { resolveCheck = resolve; }) : execute(options);
+  const updating = [...b.updates][0](1, {status: "loading"}, b.tabs[0]);
+  await vm.runInContext("stopActivity()", b.context);
+  resolveCheck([{result: {running: true, allowed: true}}]); await updating;
+  assert.equal(vm.runInContext("activeRun", b.context), null);
+});
+
 for (const stopBeforeComplete of [false, true]) {
   test(`Reels navigation ${stopBeforeComplete ? "cannot resume after stop" : "resumes after loading the next reel"}`, async () => {
     const b = background(); await flush(); b.tabs[0].url = "https://www.facebook.com/reel/123";
