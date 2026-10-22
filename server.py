@@ -437,9 +437,9 @@ class App:
                     identity_error = str(data.get("identity_error") or "")[:200]
                     avatar_data = data.get("avatar_data")
                     self.root.after(0, lambda c=client_id, n=name, f=display_id, e=identity_error, a=avatar_data: self.register_client_ui(c, n, f, e, a))
-                    print("浏览器已连接")
+                    print("Browser connected")
                     if identity_error:
-                        print(f"账号识别失败: {identity_error}")
+                        print("Account identity unavailable")
 
                 # 3. 处理状态更新
                 elif data.get("type") == "status" and self.clients.get(client_id) is ws:
@@ -475,12 +475,12 @@ class App:
                         self.root.after(0, lambda c=client_id, a=avatar_data: self.update_avatar_ui(c, a))
 
         except websockets.ConnectionClosed as e:
-            print(f"连接关闭 code={e.code} reason={e.reason}")
+            print(f"Connection closed: code={e.code}")
         except Exception as e:
-            print(f"连接异常: {type(e).__name__}")
+            print(f"Connection error: {type(e).__name__}")
         finally:
             if client_id and self.clients.get(client_id) is ws:
-                print("浏览器已断开:", client_id)
+                print("Browser disconnected")
                 self.remove_client(client_id)
 
     async def start_server(self, port):
@@ -500,7 +500,7 @@ class App:
             )
             self.servers[port] = server
         except Exception as e:
-            print(f"启动端口 {port} 失败: {e}")
+            print(f"Port {port} unavailable: {type(e).__name__}")
 
     def scan(self):
         for p in PORT_RANGE:
@@ -722,7 +722,7 @@ class App:
                 dead.append(cid)
 
         for cid in dead:
-            print("心跳超时删除:", cid)
+            print("Heartbeat expired")
             self.remove_client(cid)
             self.last_seen.pop(cid, None)
 

@@ -2,6 +2,7 @@ import ast
 import asyncio
 import ctypes
 import json
+import io
 import random
 import time
 import tempfile
@@ -94,6 +95,25 @@ class AvatarServerTest(unittest.TestCase):
         self.assertEqual(closed, [1008])
         self.assertFalse(self.app.clients)
         self.assertFalse(self.app.accounts)
+
+    def test_unicode_identity_and_disconnect_work_with_english_console(self):
+        self.app.clients = {}
+        registered = []
+        self.app.register_client_ui = lambda *args: registered.append(args)
+        async def messages():
+            yield json.dumps({"type": "init", "client_id": "unicode-test", "fb_name": "测试账号",
+                              "identity_error": "尚未完成识别"})
+        class Socket:
+            def __aiter__(self):
+                return messages()
+        output = io.BytesIO()
+        console = io.TextIOWrapper(output, encoding="cp1252", errors="strict")
+        with patch("sys.stdout", console):
+            asyncio.run(self.app.ws_handler(Socket(), 8765))
+        console.flush()
+        self.assertEqual(len(registered), 1)
+        self.assertFalse(self.app.clients)
+        self.assertIn(b"Browser disconnected", output.getvalue())
 
     def test_busy_account_does_not_receive_new_activity_commands(self):
         sent, details = [], []
@@ -393,7 +413,7 @@ class AvatarServerTest(unittest.TestCase):
             self.app.avatar_directory = SimpleNamespace(get=lambda: directory)
             with patch.object(asyncio, "run_coroutine_threadsafe", side_effect=lambda coro, loop: asyncio.run(coro)):
                 self.app.change_avatar()
-            self.assertEqual(sent, [("a", image)])
+            self.assertEqual(sent, [("a", image.resolve())])
             self.assertEqual(self.app.avatar_pending, {"a", "b"})
 
     def run_avatar_batch(self, account_count, image_count):

@@ -130,7 +130,7 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 | 验证                            | 结果                                       |
 | ----------------------------- | ---------------------------------------- |
 | JavaScript 现有与新增安全回归          | 300 / 300 通过                             |
-| Python 现有与新增安全回归              | 63 / 63 通过                               |
+| Python 现有与新增安全回归              | 64 / 64 通过                               |
 | check_ui.py                   | 布局、居中、图标、头像及主题切换通过                       |
 | check_activity_browser.cjs    | 滚动、不可见等待、停止及 Reels 翻页通过                  |
 | check_activity_ui_browser.cjs | 三语言模拟交互、草稿和安全弹框保护通过                      |
@@ -158,3 +158,5 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 ### 闪窗反馈复核（独立组件本机验证通过）
 
 开发者反馈旧实现实际使用仍有短暂窗口，其具体窗口来源未在本机复现，不能认定已定位为某一进程。为消除项目自身的 Python/脚本启动链，本轮改为独立无界面组件，并在可见的真实 Chromium 中完成认证和停止命令验证；Windows 窗口显示事件监测记录为 0 个相关可见窗口。证据见 [新组件窗口监测](D:/ML/Duty/BrowserAgent/security-audit/native-window-trace-managed.json)。结论限于新实现和本次测试环境，开发者实际部署仍需更新完整包后确认。单实例窗口恢复和主程序功能保持通过。
+
+发布 CI 复核发现英文 Windows 的 cp1252 控制台无法输出中文连接日志；已改为不包含远端原始文本的 ASCII 诊断日志，避免异常中断断线清理。新增严格 cp1252 回归；Windows 短路径测试统一比较 resolve 后的文件路径，并为 CI 设置 UTF-8。
