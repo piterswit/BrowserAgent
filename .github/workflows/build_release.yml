@@ -66,6 +66,12 @@ jobs:
             --name "FB_server"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build Native Messaging Host
+        shell: powershell
+        run: |
+          python -m PyInstaller native_bridge.py --onefile --console --clean --noconfirm --specpath build --name FB_bridge_host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Create Release Folder
         shell: powershell
         run: |
@@ -73,6 +79,8 @@ jobs:
           $releaseFolder = Join-Path "release" "FB_Auto_Active_$env:RELEASE_TAG"
           New-Item -ItemType Directory -Path $releaseFolder -Force
           Copy-Item -LiteralPath ".\dist\FB_server.exe" -Destination $releaseFolder
+          New-Item -ItemType Directory -Path "$releaseFolder\conf" -Force
+          Copy-Item -LiteralPath ".\dist\FB_bridge_host.exe" -Destination "$releaseFolder\conf"
           Copy-Item -LiteralPath ".\README.md" -Destination $releaseFolder
           Copy-Item -LiteralPath ".\WS Browser Bridge" -Destination "$releaseFolder\Browser_Extension" -Recurse
 

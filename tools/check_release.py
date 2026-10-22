@@ -50,7 +50,8 @@ def check_archive(path, tag):
         if archive.testzip() is not None:
             raise ValueError("Release archive failed CRC verification")
         names = {name.replace("\\", "/") for name in archive.namelist()}
-        expected = {prefix + "FB_server.exe", prefix + "README.md"}
+        native_host = prefix + "conf/FB_bridge_host.exe"
+        expected = {prefix + "FB_server.exe", native_host, prefix + "README.md"}
         expected.update(
             prefix + "Browser_Extension/" + file.relative_to(EXTENSION).as_posix()
             for file in EXTENSION.rglob("*") if file.is_file()
@@ -58,13 +59,18 @@ def check_archive(path, tag):
         missing = expected - names
         if missing:
             raise ValueError(f"Release archive is missing files: {sorted(missing)}")
-        if any(not name.startswith(prefix) or "conf" in name.split("/") for name in names):
+        allowed_conf = {prefix + "conf/", native_host}
+        if any(not name.startswith(prefix) or ".." in name.split("/")
+               or ("conf" in name.casefold().split("/") and name not in allowed_conf)
+               or name == prefix + "FB_bridge_host.exe" for name in names):
             raise ValueError("Unexpected root or user configuration in release archive")
         manifest = json.loads(archive.read(prefix + "Browser_Extension/manifest.json"))
         if f"v{manifest['version']}" != tag:
             raise ValueError("Packaged extension version differs from release tag")
         if archive.getinfo(prefix + "FB_server.exe").file_size == 0:
             raise ValueError("Packaged executable is empty")
+        if archive.getinfo(native_host).file_size == 0:
+            raise ValueError("Native Messaging host is empty")
 
 
 def main():

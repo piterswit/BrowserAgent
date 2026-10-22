@@ -58,8 +58,9 @@ function bridge(mode, failure, identityError = "") {
   const context = vm.createContext({chrome, window: {}, console: {warn() {}}, crypto: {randomUUID: () => "client"}, WebSocket: Socket,
     URL, setTimeout, clearTimeout, setInterval() {}});
   vm.runInContext(source, context);
+  vm.runInContext("secureSend = (message, socket) => socket.send(JSON.stringify(message))", context);
   context.sendMessage = value => messages.push(JSON.parse(value));
-  vm.runInContext("ws = {readyState: WebSocket.OPEN, send: sendMessage}", context);
+  vm.runInContext("ws = {readyState: WebSocket.OPEN, send: sendMessage}; authenticatedSockets.add(ws)", context);
   return {context, chrome, messages, commands, events, identity, created, removed, navigated, tabRemoved, windowRemoved, runtimeMessages,
     permanentTabListeners: tabRemoved.size, detached: () => detached};
 }

@@ -458,9 +458,12 @@ function background() {
   const context = vm.createContext({...clock, chrome, WebSocket: Socket, crypto: {randomUUID: () => "run-" + ++nextId}, URL,
     setInterval() {}, console});
   vm.runInContext(source("bg.js"), context);
+  vm.runInContext("secureSend = (message, socket) => socket.send(JSON.stringify(message))", context);
   return {clock, sockets, context, chrome, messages, injected, data, tabs, updates, removed, runtimeMessages, alarms,
     openConnection(socket = sockets[0]) {
       socket.readyState = 1; socket.onopen();
+      context.testSocket = socket;
+      vm.runInContext("authenticatedSockets.add(testSocket); clearTimeout(connectTimer); connectTimer = null; initializeAccount(testSocket)", context);
     },
     closeWindows: async () => { normalWindows = []; await windowRemoved[0](); },
     openWindow: () => { normalWindows = [{id: 1}]; windowCreated[0](); }};

@@ -2,7 +2,7 @@
 
 审核日期：2026-10-22（Asia/Tokyo）。目标目录：`D:\ML\Duty\BrowserAgent`。修复版本：**0.8.1**。
 
-审核结论：**在开发者已接受风险和约定范围内通过**。本次完成源码、依赖、扩展信任边界、CI 和凭据排查，并实施来源校验、身份隔离、依赖升级等修复与加固。按开发者最新要求移除配对及消息签名，采用可信本机环境前提；该结论不表示连接经过身份认证或项目不存在安全问题。
+审核结论：**通过（本次范围内；保留已确认的依赖维护及条件性风险）**。保留现有 WebSocket 及业务流程，新增可信凭据引导、DPAPI 存储、双向认证及逐消息签名，不再采用“接受无认证连接”的处理方式。不承诺抵御同一 Windows 用户环境已被控制的情形。
 
 ## 1. 项目概况与范围
 
@@ -12,7 +12,7 @@
 - JavaScript 没有 package.json 或 npm 锁文件；运行时代码不依赖 npm 包。浏览器检查脚本另需 Playwright，本次使用已安装的 Python Playwright 所带 Node 驱动，没有升级全局环境。
 - 覆盖当前桌面源码、全部扩展入口和页面脚本、测试、工具、README、GitHub Actions，以及本次生成的 0.8.1 修复包。
 - 按开发者最新确认，既往发布和仓库历史不纳入本次报告，本报告不重新评价既往发布。其他机器、外部分发渠道及 GitHub Release 资产也不在本轮范围内。
-- 本机当前无项目运行进程或桥接端口监听；已读取目录及配置实际 ACL。未操作真实账号。
+- 已读取目录及配置实际 ACL；新增真实浏览器认证验证使用临时扩展副本、全新浏览器配置及系统分配的回环端口，避开既有监听者。未操作真实账号。
 
 报告位置均指修复后的源码；漏洞影响描述说明修改前行为。组件公告的严重度不等于已证明本项目存在同等级可利用路径。
 
@@ -20,16 +20,15 @@
 
 | 编号      | 类别  | 严重级别     | 位置                                                                                                                                          | 状态                                                |
 | ------- | --- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| SEC-01  | 代码  | High     | [server.py:378](D:/ML/Duty/BrowserAgent/server.py:378)、[bg.js:700](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:700>)                   | 已修复：浏览器来源校验和消息资源限制；本机身份认证由开发者选择不实施                |
-| SEC-02  | 代码  | Medium   | [server.py:396](D:/ML/Duty/BrowserAgent/server.py:396)                                                                                      | 已修复：连接身份绑定及重复 ID 拒绝                               |
+| SEC-01  | 代码  | High     | [server.py:385](D:/ML/Duty/BrowserAgent/server.py:385)、[bg.js:738](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:738>)                   | 已修复：Native Messaging 自动引导、双向认证、消息签名及来源限制                |
+| SEC-02  | 代码  | Medium   | [server.py:414](D:/ML/Duty/BrowserAgent/server.py:414)                                                                                      | 已修复：连接身份绑定及重复 ID 拒绝                               |
 | DEP-01  | 依赖  | High     | [requirements.txt:3](D:/ML/Duty/BrowserAgent/requirements.txt:3)                                                                            | 已修复：PyInstaller 6.6.0 → 6.22.3                    |
 | DEP-02  | 依赖  | Critical | [requirements.txt:4](D:/ML/Duty/BrowserAgent/requirements.txt:4)                                                                            | 已修复：锁定 Pillow 13.0.0；组件级，当前危险调用未发现                |
 | DEP-03  | 依赖  | Medium   | [requirements.lock:1](D:/ML/Duty/BrowserAgent/requirements.lock:1)、[工作流:37](D:/ML/Duty/BrowserAgent/.github/workflows/build_release.yml:37) | 已修复：完整版本及 SHA256 锁定                               |
-| EXT-01  | 代码  | Low      | [bg.js:778](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:778>)                                                                          | 已修复：消息调用方和顶层 frame 校验；防御性加固                       |
-| EXT-02  | 代码  | Low      | [bg.js:186](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:186>)、[bg.js:654](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:654>)       | 已修复：目的地址、滚动参数、头像重定向限制                             |
+| EXT-01  | 代码  | Low      | [bg.js:857](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:857>)                                                                          | 已修复：消息调用方和顶层 frame 校验；防御性加固                       |
+| EXT-02  | 代码  | Low      | [bg.js:223](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:223>)、[bg.js:692](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/bg.js:692>)       | 已修复：目的地址、滚动参数、头像重定向限制                             |
 | EXT-03  | 代码  | Low      | [manifest.json:12](<D:/ML/Duty/BrowserAgent/WS Browser Bridge/manifest.json:12>)                                                            | 已修复：删除闲置 unlimitedStorage                         |
 | CI-01   | 代码  | Medium   | [工作流:23](D:/ML/Duty/BrowserAgent/.github/workflows/build_release.yml:23)                                                                    | 已修复：Action 固定提交 SHA、禁用 Git 凭据持久化                  |
-| RISK-01 | 代码  | Medium   | 回环 WebSocket 两端                                                                                                                             | 建议关注：开发者接受本机进程连接端；未修复 |
 | RISK-02 | 依赖  | Medium   | [requirements.txt:1](D:/ML/Duty/BrowserAgent/requirements.txt:1)                                                                            | 建议关注：开发者选择本轮保留 websockets 12.0                    |
 | DEP-04  | 依赖  | Medium   | [requirements.lock:93](D:/ML/Duty/BrowserAgent/requirements.lock:93)                                                                        | 建议关注：开发者已接受条件性未修复风险，保留 13.0.0                     |
 
@@ -82,11 +81,13 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 
 ## 4. 已修复的代码问题及改动理由
 
-**SEC-01：浏览器来源及消息资源限制。** 服务仅监听 127.0.0.1，握手 Origin 仅接受完整的 Chrome 扩展源；限制 128 KiB 消息、8 条接收队列并关闭压缩，扩展拒绝过大的文本消息。此措施限制普通网页连接与资源消耗，但 Origin 可被本机程序伪造，不能作为身份认证。
+**SEC-01：无需输入的自动认证。** 软件启动时在当前用户 HKCU 自动注册 Native Messaging host，allowed_origins 仅允许 manifest 公钥对应的固定扩展 ID。随机密钥使用当前用户 DPAPI 加密后原子写入 `%LOCALAPPDATA%/BrowserAgent/NativeBridge/credential.dpapi`；互斥量同步多实例创建，损坏凭据拒绝继续，不静默轮换。发布包将独立通信组件放在 conf/FB_bridge_host.exe，由浏览器后台调用，根目录只保留桌面 EXE；源码启动自动生成指向实际 Python 和脚本路径的启动器。移动软件后重启会更新注册路径。
 
-**RISK-01：无需配对的本机连接（开发者接受）。** 按开发者明确要求，移除桌面和扩展配对 UI、凭据读取、双向挑战及逐消息签名，连接后直接交换账号资料和控制命令。恶意本机进程仍可冒充客户端，或抢占约定端口冒充控制端；后者可请求扩展执行账号操作及满足现有检查条件的图片上传。利用要求攻击者能在本机运行程序，并满足相关浏览器、账号及文件检查条件；不是已证明的任意文件读取。开发者选择以可信本机环境为前提接受该风险，不能标记为技术上已修复。业务命令异步处理，Stop 不等待长任务完成。
+扩展通过 Native Messaging 获取凭据，仅在内存中使用；没有配对码界面或扩展持久存储。双方随机 nonce 和角色区分的 HMAC-SHA256 完成双向认证，成功前不读取账号资料、不执行控制；逐消息签名绑定会话、方向、递增序号及消息体，拒绝篡改、反射和重放。15 秒握手超时、128 KiB 消息上限、8 条接收队列并关闭压缩，保留 Origin 校验。组件或认证失败时提示错误并重试，不退回无认证连接。长动作异步处理，Stop 不等待其结束。
 
-**SEC-02：客户端 ID 可覆盖或切换。** 原连接能反复以任意 client_id 初始化，覆盖其他连接，或在断开后留下旧 ID 映射。现在验证 ID 类型、长度和字符；一条连接绑定一个 ID，拒绝抢占其他活动连接，状态更新必须来自当前登记的连接。断线仍只清理该连接自己的记录。利用原本要求能访问服务；此隔离保留，但不认证连接端身份。
+依据：[Chrome Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[固定扩展 ID](https://developer.chrome.com/docs/extensions/reference/manifest/key)、[Microsoft DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。Native Messaging、argv 来源检查及 DPAPI 均不能隔离同一 Windows 用户的恶意代码。
+
+**SEC-02：客户端 ID 可覆盖或切换。** 原连接能反复以任意 client_id 初始化，覆盖其他连接，或在断开后留下旧 ID 映射。现在验证 ID 类型、长度和字符；一条连接绑定一个 ID，拒绝抢占其他活动连接，状态更新必须来自当前登记的连接。断线仍只清理该连接自己的记录。利用原本要求能访问服务；此隔离与双向认证同时保留。
 
 **EXT-01：消息来源防御性加固。** 验证自身扩展 ID；控制操作只接受本扩展 popup 的精确 URL；页面回调只接受 HTTPS Facebook 顶层 frame，再校验既有任务 ID。原 manifest 没有 externally_connectable，未发现任意网站能直接调用 onMessage 的证据，因此此项定为 Low 加固。
 
@@ -100,7 +101,7 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 
 在当前源码、配置及本次 0.8.1 修复包检查中，没有发现可确认的真实 API Key、Token、私钥、数据库密码、云 AccessKey 或 Webhook 泄露。模式扫描和人工复核不构成对任意编码或隐写内容均无泄露的取证证明。
 
-`.env` 原先未在忽略规则中；已补充 `.env`、`.env.*`（允许 `.env.example`）及私钥扩展名。`conf/` 原已忽略，检查未被 Git 跟踪；没有发现被跟踪的 .env/私钥文件。本次未发现需要迁移为环境变量的硬编码凭据，故没有创建含虚构变量的 .env.example。已移除配对凭据的生成、读取及使用；既有配置或浏览器存储中的旧字段不再参与连接。
+`.env` 原先未在忽略规则中；已补充 `.env`、`.env.*`（允许 `.env.example`）及私钥扩展名。`conf/` 原已忽略，检查未被 Git 跟踪；没有发现被跟踪的 .env/私钥文件。本次未发现需要迁移为环境变量的硬编码凭据，故没有创建含虚构变量的 .env.example。自动凭据使用当前用户 DPAPI 加密，不写入 conf、扩展存储或发行包。旧手动配对字段不再参与连接。
 
 **如果随后确认某个凭据曾提交或对外泄露，必须在对应平台作废并重新生成；仅删除代码、加入 gitignore 或清理当前提交不够。** 本次没有发现需要实际轮换的外部平台密钥，也没有擅自轮换任何现有凭据。
 
@@ -108,15 +109,14 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 
 | 事项                   | 可选方案                            | 建议 / 已确认决定                                   |
 | -------------------- | ------------------------------- | -------------------------------------------- |
-| 本机连接身份认证             | 无需配对；或恢复双向配对认证                  | 开发者明确要求无需配对并接受其他本机连接风险；从安全角度建议保留认证，现按已确认决定移除 |
 | websockets 12.0 维护状态 | 保留；或迁移 16.x API 并重新验证           | 开发者选择本轮保留，后续单独迁移；这是维护风险，未宣称已有适用 CVE          |
 | Pillow 无修复 Arrow 问题  | 保留 13.0.0 并在新增相关路径前重新评估；或暂缓依赖定版 | 开发者已明确选择保留 13.0.0，接受条件性未修复风险并跟踪上游；当前未发现受影响路径 |
 
-本机连接不提供身份认证、消息签名或加密，不防御恶意本机进程或本机流量观察。开发者已明确选择可信本机环境部署并移除配对；如使用前提改变，应重新评估并恢复认证。本机目录和 conf 的实际 ACL 已核对，未见 Everyone / Authenticated Users / BUILTIN Users 的通用 Allow；没有修改系统权限。
+回环连接已提供双向认证及消息签名，但不加密消息。DPAPI 绑定当前用户，无法防御同一 Windows 用户已能执行任意代码、修改注册表或读取进程内存的情形。注册使用 HKCU，不请求管理员权限；组织策略禁止该功能时需由部署方允许该 host，不绕过策略。首次引入 manifest 公钥可能改变原开发版扩展身份，需重新加载并停用重复旧扩展，不修改 Facebook 登录数据。
 
 `debugger`、tabs、Facebook 主机权限是现有功能所需，保留；建议将高权限上传能力逐步改为按需授权。当前 offscreen 文件未被 manifest 启用，不能作为活动入口；启用前需重新审查其独立连接入口。CI 的写权限仍在整个发布 job 范围内，后续可将只读构建与带写权限发布拆分。Playwright 测试依赖未纳入 Node 开发依赖清单，建议另做可复现测试环境。
 
-头像下载目前在完成 blob 下载后检查 5 MiB 上限，极大响应或解码负载的资源消耗仍建议加流式上限；未证明有可控的生产利用路径。经开发者确认，本轮不包括其他部署机器、外部分发渠道或 GitHub Release 资产；不再把这些排除范围作为覆盖缺口。本机无正在运行的项目实例，源码与 0.8.1 包的动态验证仍以隔离测试和启动检查为准，不代表生产账号或所有浏览器环境验证。
+头像下载目前在完成 blob 下载后检查 5 MiB 上限，极大响应或解码负载的资源消耗仍建议加流式上限；未证明有可控的生产利用路径。经开发者确认，本轮不包括其他部署机器、外部分发渠道或 GitHub Release 资产；不再把这些排除范围作为覆盖缺口。源码与 0.8.1 包的动态验证以隔离测试和启动检查为准，不代表生产账号或所有浏览器环境验证。
 
 ## 7. 验证与交付
 
@@ -124,21 +124,24 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 
 | 验证                            | 结果                                       |
 | ----------------------------- | ---------------------------------------- |
-| JavaScript 现有与新增安全回归          | 298 / 298 通过                             |
-| Python 现有与新增安全回归              | 47 / 47 通过                               |
+| JavaScript 现有与新增安全回归          | 300 / 300 通过                             |
+| Python 现有与新增安全回归              | 57 / 57 通过                               |
 | check_ui.py                   | 布局、居中、图标、头像及主题切换通过                       |
 | check_activity_browser.cjs    | 滚动、不可见等待、停止及 Reels 翻页通过                  |
 | check_activity_ui_browser.cjs | 三语言模拟交互、草稿和安全弹框保护通过                      |
 | check_avatar_browser.cjs      | 独立模拟页面上传、激活和保存确认通过                       |
 | 扩展弹窗隔离检查                      | 操作按钮在 600px 内可见、无配对控件、连接状态提示通过           |
-| Python ↔ JavaScript 真实回环互通    | 无需配对交换 Unicode 账号资料及控制命令通过；Chrome API 模拟 |
+| Python ↔ JavaScript 真实回环互通    | 真实 Chromium 扩展 → Native host EXE / 源码启动器 → DPAPI → 双向认证及签名 Stop 确认通过；账号资料模拟，网页外网请求阻断 |
 | 哈希锁安装、pip check               | 通过，无依赖冲突                                 |
 | 最终 OSV / PyPI 双源审计            | 工具均零命中；不覆盖官方未修复 Arrow 公告                 |
-| PyInstaller 6.22.3 单文件构建      | 通过，确认来源校验模块和 GUI 资源已打包                   |
-| check_release.py，tag v0.8.1   | EXE 版本、资源及实际 ZIP 内容检查通过，确认未包含用户 conf     |
-| 打包 EXE 启动冒烟检查                 | 在独立临时目录隐藏启动成功，能创建配置，随后关闭本次测试进程           |
+| PyInstaller 6.22.3 单文件构建      | 桌面及 Native host 均构建通过，认证/注册模块和 GUI 资源已打包                   |
+| check_release.py，tag v0.8.1   | EXE 版本、资源及实际 ZIP 内容检查通过，确认 conf 仅含通信组件，无用户配置     |
+| 打包 EXE 启动冒烟检查                 | 在独立临时目录隐藏启动成功，随附组件可读取 DPAPI 凭据并拒绝错误来源，随后关闭本次测试进程           |
+| Native Messaging 真实浏览器集成 | 打包 EXE 和源码 Python 启动器均通过：固定扩展 ID、DPAPI、双向认证及签名停止确认；不使用真实账号 |
 | git diff --check              | 通过                                       |
 
-审核证据与测试日志保存在 [security-audit](D:/ML/Duty/BrowserAgent/security-audit)。本地构建包为 [FB_Auto_Active_v0.8.1.zip](D:/ML/Duty/BrowserAgent/release/security-audit/FB_Auto_Active_v0.8.1.zip)。无需配对的连接说明已写入 README；桌面、manifest 和 popup 版本统一为 0.8.1，软件和扩展须同步更新。没有创建提交、推送 tag 或发布远程 Release。
+真实浏览器集成证据见 [发布组件](D:/ML/Duty/BrowserAgent/security-audit/native-browser-integration.txt) 和 [源码启动器](D:/ML/Duty/BrowserAgent/security-audit/native-browser-source.txt)。
 
-本次修改文件对应关系：桌面连接及身份隔离在 server.py；来源校验在 bridge_security.py；扩展通信、来源/地址校验在 bg.js；弹窗交互在 popup.html/popup.js；权限与版本在 manifest.json；依赖约束在 requirements.txt/requirements.lock；CI 固定版本和安装方式在工作流；忽略规则在 .gitignore；连接说明在 README。测试使用正常的无需配对协议，验证实际连接、来源隔离、身份抢占及长任务中的 Stop。
+审核证据与测试日志保存在 [security-audit](D:/ML/Duty/BrowserAgent/security-audit)。本地构建包为 [FB_Auto_Active_v0.8.1.zip](D:/ML/Duty/BrowserAgent/release/security-audit/FB_Auto_Active_v0.8.1.zip)。无需输入的自动认证说明已写入 README；桌面、manifest 和 popup 版本统一为 0.8.1，软件和扩展须同步更新。没有创建提交、推送 tag 或发布远程 Release。
+
+本次修改文件对应关系：桌面自动注册、认证入口及身份隔离在 server.py；认证签名及来源校验在 bridge_security.py；扩展通信、来源/地址校验在 bg.js；弹窗交互在 popup.html/popup.js；权限与版本在 manifest.json；依赖约束在 requirements.txt/requirements.lock；CI 固定版本和安装方式在工作流；忽略规则在 .gitignore；连接说明在 README。测试覆盖自动引导、认证签名、来源隔离、身份抢占及长任务中的 Stop。新增 native_bridge.py 实现自动注册、DPAPI 及原生消息协议；CI 和发布包校验强制包含通信组件。

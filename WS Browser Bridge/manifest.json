@@ -14,7 +14,8 @@
     "tabs",
     "scripting",
     "storage",
-    "alarms" 
+    "alarms",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://*.facebook.com/*",
@@ -32,5 +33,6 @@
       "32": "icon/bridge-32.png"
     },
     "default_popup": "popup.html"
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq2zX+nscr8ZghScpKmT1+njml/e1+4QQkQv3gMsMfS3VZ3blBbwFwAHoHSPMgA4ovTsxLoVdhFJV8zPAoKnE5bbPYheQ9VdjQ10O1vF33hCskCctBhyFHH8pWhco7soUMoRnL2xkNYOVRns6shoecJ++/PwOaRqMWWqAnd2+s6yi2psnagOUSTTpfsdWV9wYAPNDcFR/eVpMcMku01/xPqbNSogUaimEaDynyFH6+lK8XcHzVbJpqXxLUSAxUlsiVwFQynQytm6HGi/7DLsXiXMVJvI50D9OByGbBjkJbGkxM1UrroX1MWKkkcUpWl6+4bQ/52GaXsrpttdTGpTaFQIDAQAB"
 }

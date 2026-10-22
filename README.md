@@ -55,7 +55,13 @@ python server.py
 
 ## 连接账号
 
-启动本地软件后，在扩展弹窗点击“连接”；无需配对码，后续自动重连。连接状态显示“已连接”后即可使用。软件仅监听本机回环地址，保留浏览器来源和消息参数校验。按开发者确认，本项目用于可信本机环境，连接不做身份认证。
+启动软件后会自动注册当前用户的 Native Messaging 组件。扩展自动获取凭据，完成双向认证后连接；无需输入、复制或保存配对码。显示“已连接（自动认证）”后即可使用，后续自动重连。
+
+发布包根目录只需运行 `FB_server.exe`；`conf/FB_bridge_host.exe` 是供浏览器后台调用的通信组件，不需要手动打开，请保留它的目录位置。软件每次启动会更新 Chrome、Edge 和 Chromium 的当前用户注册路径，移动软件后重新启动即可；无需管理员权限。源码启动自动生成 Python 启动器，无需先打包组件。组件缺失、权限不足或组织策略禁止 Native Messaging 时会提示错误，不退回无认证连接。
+
+凭据保存在 `%LOCALAPPDATA%/BrowserAgent/NativeBridge/credential.dpapi`，由当前用户 DPAPI 加密，不写入仓库、发行包、日志或扩展存储。回环消息有双向认证、签名及递增序号，但没有加密，也不防御同一 Windows 用户已被控制的情形。需要重置时先关闭所有软件实例，再删除该凭据文件并重新启动。
+
+扩展新增 `nativeMessaging` 权限并用 manifest 公钥固定 ID，更新时需重新加载并确认新增权限。从没有固定 ID 的开发版首次迁移时，浏览器可能识别为新扩展，需重新加载目录并停用重复的旧扩展；不会修改 Facebook 登录数据。
 
 
 1. 先启动本地软件，再在对应浏览器配置中登录 Facebook。
@@ -136,9 +142,9 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 
 ## 更新与打包
 
-推送 `v0.8.1` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件版本一致，否则构建中止。发布包为 `FB_Auto_Active_v0.8.1.zip`，包含 `FB_server.exe`、`Browser_Extension` 和 README；构建产物位于 CI 的 `release` 目录并上传到 GitHub Releases。用户的 `conf` 配置不会打包，首次运行时在程序目录下创建。
+推送 `v0.8.1` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件版本一致，否则构建中止。发布包为 `FB_Auto_Active_v0.8.1.zip`，包含 `FB_server.exe`、`conf/FB_bridge_host.exe`、`Browser_Extension` 和 README；构建产物位于 CI 的 `release` 目录并上传到 GitHub Releases。`conf` 中只打包通信组件，不打包用户的 config.json 或其他配置；首次运行时创建用户配置。
 
-v0.8.1 保留无需配对的本机连接，修复连接身份隔离，收紧扩展消息和目的地址校验，升级并锁定依赖。安装要求为 Python 3.11 或以上，桌面程序与扩展须同步更新。保留 URL 自动启动功能。
+v0.8.1 使用 Native Messaging 自动获取凭据并双向认证，无需手动配对，修复连接身份隔离，收紧扩展消息和目的地址校验，升级并锁定依赖。安装要求为 Python 3.11 或以上，桌面程序与扩展须同步更新。保留 URL 自动启动功能。
 
 v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、批量头像不重复分配，以及活跃停止和滚动翻页稳定性改进。
 
@@ -146,17 +152,19 @@ v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、
 
 ```powershell
 $iconFolder = (Resolve-Path "WS Browser Bridge/icon").Path
-python -m PyInstaller --noconfirm --onefile --windowed --name server --specpath build --icon "$iconFolder/bridge.ico" --add-data "$iconFolder;WS Browser Bridge/icon" server.py
+python -m PyInstaller --noconfirm --onefile --windowed --name FB_server --specpath build --icon "$iconFolder/bridge.ico" --add-data "$iconFolder;WS Browser Bridge/icon" server.py
+python -m PyInstaller --noconfirm --onefile --console --name FB_bridge_host --distpath dist/conf --specpath build native_bridge.py
 ```
 
-上述 Windows 命令包含软件窗口图标和扩展图标资源，输出为 `dist/server.exe`。本机已有的 `server.spec` 也已配置图标，可使用 `python -m PyInstaller --noconfirm server.spec`；仓库目前将该本机配置、`build`、`dist` 和 `release` 设为忽略文件。
+上述 Windows 命令包含软件窗口图标和扩展图标资源，输出为 `dist/FB_server.exe` 和 `dist/conf/FB_bridge_host.exe`。本机已有的 `server.spec` 也已配置图标，可使用 `python -m PyInstaller --noconfirm server.spec` 构建桌面程序，通信组件仍需按上面的命令单独构建；仓库目前将该本机配置、`build`、`dist` 和 `release` 设为忽略文件。
 
 ## 代码结构与验证
 
 ```text
 server.py                        本地界面、账号管理和 WebSocket 服务
 config_store.py                  软件目录定位、头像目录配置读写
-bridge_security.py               本机桥接浏览器来源校验
+bridge_security.py               双向认证、消息签名及来源校验
+native_bridge.py                 Native Messaging、DPAPI 和当前用户自动注册
 requirements.lock               Windows/Python 3.11+ 完整依赖版本与 wheel 哈希
 system_theme.py                  Windows 应用深浅色偏好读取
 server.spec                      本地打包配置

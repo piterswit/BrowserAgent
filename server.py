@@ -17,7 +17,8 @@ from ttkbootstrap.constants import *
 import websockets
 from config_store import load_configuration, save_configuration
 from system_theme import system_theme_name
-from bridge_security import check_origin
+from bridge_security import check_origin, authenticate
+from native_bridge import prepare_native_bridge
 
 APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
@@ -70,6 +71,12 @@ class App:
         self.last_seen = {}  # 心跳包
         self.avatar_pending = set()
         self.configuration = load_configuration()
+        self.bridge_key = None
+        try:
+            self.bridge_key = prepare_native_bridge()
+        except (OSError, ValueError, KeyError):
+            self.root.after(0, lambda: messagebox.showerror(
+                "自动连接不可用", "本机通信组件注册失败。请确认软件的 conf 目录包含 FB_bridge_host.exe，且当前用户目录及注册表可写，然后重启软件。"))
         self.config_timer = None
 
         self.build_ui()
@@ -375,6 +382,17 @@ class App:
                 self.list_view.delete(item)
         self.update_summary()
 
+    async def authenticated_handler(self, ws, port):
+        if self.bridge_key is None:
+            await ws.close(code=1011, reason="Native bridge unavailable")
+            return
+        try:
+            connection = await authenticate(ws, self.bridge_key)
+            if connection:
+                await self.ws_handler(connection, port)
+        except websockets.ConnectionClosed:
+            pass
+
     async def ws_handler(self, ws, port):
         client_id = None
         try:
@@ -469,7 +487,7 @@ class App:
             return
         try:
             server = await websockets.serve(
-                lambda ws: self.ws_handler(ws, port),
+                lambda ws: self.authenticated_handler(ws, port),
                 "127.0.0.1",
                 port,
                 ping_interval=20,

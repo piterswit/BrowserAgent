@@ -30,6 +30,8 @@ class ReleaseTests(unittest.TestCase):
         prefix = f"FB_Auto_Active_{self.tag}/"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(prefix + "FB_server.exe", b"test executable")
+            if omit != "conf/FB_bridge_host.exe":
+                archive.writestr(prefix + "conf/FB_bridge_host.exe", b"test native host")
             archive.writestr(prefix + "README.md", "test readme")
             for file in release.EXTENSION.rglob("*"):
                 if not file.is_file():
@@ -59,10 +61,24 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release.check_archive(path, self.tag)
 
+    def test_missing_native_host_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_archive(path, omit="conf/FB_bridge_host.exe")
+            with self.assertRaises(ValueError):
+                release.check_archive(path, self.tag)
+
     def test_user_configuration_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "release.zip"
             self.make_archive(path, extra="conf/config.json")
+            with self.assertRaises(ValueError):
+                release.check_archive(path, self.tag)
+
+    def test_native_host_must_not_be_exposed_at_release_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_archive(path, extra="FB_bridge_host.exe")
             with self.assertRaises(ValueError):
                 release.check_archive(path, self.tag)
 

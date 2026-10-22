@@ -1,6 +1,43 @@
 // bg.js
 
 let ws=null;
+const authenticatedSockets = new WeakSet();
+const bridgeSessions = new WeakMap();
+const noncePattern = /^[0-9a-f]{64}$/;
+let connectionError = "";
+async function getBridgeCredential() {
+  let timer;
+  try {
+    const response = await Promise.race([
+      chrome.runtime.sendNativeMessage("com.browseragent.bridge", {cmd: "get_bridge_credentials"}),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Native host timeout")), 10000); })
+    ]);
+    if (response?.protocol !== 1 || typeof response.key !== "string" || !noncePattern.test(response.key)) {
+      throw new Error("Invalid native credential");
+    }
+    return response.key;
+  } catch {
+    connectionError = "自动认证组件不可用：请先启动新版软件，再重新连接";
+    throw new Error("Native bridge unavailable");
+  } finally { clearTimeout(timer); }
+}
+async function bridgeProof(key, role, serverNonce, clientNonce, suffix = "") {
+  const bytes = Uint8Array.from(key.match(/../g), hex => parseInt(hex, 16));
+  const signingKey = await crypto.subtle.importKey("raw", bytes, {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", signingKey,
+    new TextEncoder().encode(`fb-bridge-v1|${role}|${serverNonce}|${clientNonce}${suffix}`));
+  return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+function secureSend(message, socket) {
+  const session = bridgeSessions.get(socket);
+  if (!session) return;
+  session.sendQueue = session.sendQueue.then(async () => {
+    if (ws !== socket || !authenticatedSockets.has(socket)) return;
+    const body = JSON.stringify(message), seq = ++session.outgoing;
+    const proof = await bridgeProof(session.key, "client-message", session.serverNonce, session.clientNonce, `|${seq}|${body}`);
+    if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type: "secure", seq, body, proof}));
+  }).catch(() => { try { socket.close(1008, "Message signing failed"); } catch {} });
+}
 const clientId = crypto.randomUUID();
 
 const PORTS=[
@@ -315,7 +352,7 @@ async function runAvatarChange(filePath, expectedProfile) {
   let baseline = null;
   const report = (success, error = "", confirmed = true, avatarData = null) => {
     if (operationSocket?.readyState === WebSocket.OPEN) {
-      operationSocket.send(JSON.stringify({type: "avatar_result", client_id: clientId, success, error, confirmed, avatar_data: avatarData}));
+      secureSend({type: "avatar_result", client_id: clientId, success, error, confirmed, avatar_data: avatarData}, operationSocket);
     }
   };
   try {
@@ -331,7 +368,7 @@ async function runAvatarChange(filePath, expectedProfile) {
       await verifyAvatarAccount(tab.id, expectedProfile);
     };
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({type: "status", status: "change_avatar", client_id: clientId}));
+      secureSend({type: "status", status: "change_avatar", client_id: clientId}, ws);
     }
     await checkAccount();
     baseline = (await readProfileIdentity(tab.id)).avatar_url;
@@ -415,6 +452,7 @@ async function runAvatarChange(filePath, expectedProfile) {
 let identityPromise = null;
 let identitySocket = null;
 async function initializeAccount(socket) {
+  if (!authenticatedSockets.has(socket)) return;
   if (identityPromise) {
     if (identitySocket === socket) return identityPromise;
     await identityPromise;
@@ -425,7 +463,7 @@ async function initializeAccount(socket) {
     try {
       const identity = await getFBIdentity();
       if (ws === socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({type: "init", client_id: clientId, ...identity}));
+        secureSend({type: "init", client_id: clientId, ...identity}, socket);
       }
     } catch (error) {
       safeSend({type: "init", fb_name: "未识别账号", identity_error: error.message}, socket);
@@ -435,8 +473,8 @@ async function initializeAccount(socket) {
 }
 
 function safeSend(message, socket = ws) {
-  if (socket !== ws || socket?.readyState !== WebSocket.OPEN) return;
-  try { socket.send(JSON.stringify({...message, client_id: clientId})); } catch {}
+  if (socket !== ws || socket?.readyState !== WebSocket.OPEN || !authenticatedSockets.has(socket)) return;
+  secureSend({...message, client_id: clientId}, socket);
 }
 function isFacebook(url) {
   try { const parsed = new URL(url); return parsed.protocol === "https:" && /(^|\.)facebook\.com$/.test(parsed.hostname); } catch { return false; }
@@ -704,14 +742,19 @@ function connect(i = 0) {
   try { socket = new WebSocket("ws://127.0.0.1:" + PORTS[i]); }
   catch { scheduleRetry(i + 1); return; }
   ws = socket;
-  let opened = false;
+  let serverNonce = null, clientNonce = null, key = null, phase = "challenge";
+  let messageQueue = Promise.resolve();
   const disconnected = () => {
     if (ws !== socket) return;
     clearTimeout(connectTimer);
     connectTimer = null;
+    const trusted = authenticatedSockets.has(socket);
     ws = null;
-    if (opened) stopActivity().catch(reportError);
-    scheduleRetry(opened ? PORTS.length : i + 1);
+    authenticatedSockets.delete(socket);
+    bridgeSessions.delete(socket);
+    key = null;
+    if (trusted) stopActivity().catch(reportError);
+    scheduleRetry(trusted ? PORTS.length : i + 1);
   };
   connectTimer = setTimeout(() => {
     disconnected();
@@ -719,20 +762,56 @@ function connect(i = 0) {
   }, 3000);
   socket.onopen = () => {
     if (ws !== socket) { try { socket.close(); } catch {} return; }
-    opened = true;
     clearTimeout(connectTimer);
     connectTimer = null;
     retryDelay = 5000;
     clearRetry();
-    initializeAccount(socket).catch(reportError);
+    connectTimer = setTimeout(() => { disconnected(); try { socket.close(1008, "Authentication timeout"); } catch {} }, 15000);
   };
   socket.onmessage = event => {
-    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
-    if (typeof event.data !== "string" || event.data.length > 131072) {
-      socket.close(1008, "Invalid bridge message");
-      return;
-    }
-    try { handleAction(JSON.parse(event.data)).catch(reportError); } catch {}
+    return messageQueue = messageQueue.then(async () => {
+      if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+      if (typeof event.data !== "string" || event.data.length > 131072) throw new Error("Invalid bridge message");
+      const msg = JSON.parse(event.data);
+      if (!msg || typeof msg !== "object" || Array.isArray(msg)) throw new Error("Object required");
+      if (!authenticatedSockets.has(socket)) {
+        if (phase === "challenge" && msg.type === "auth_challenge" && typeof msg.nonce === "string" && noncePattern.test(msg.nonce)) {
+          phase = "proof";
+          serverNonce = msg.nonce;
+          key = await getBridgeCredential();
+          if (ws !== socket) { key = null; return; }
+          clientNonce = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, "0")).join("");
+          const proof = await bridgeProof(key, "client", serverNonce, clientNonce);
+          if (ws !== socket) { key = null; return; }
+          socket.send(JSON.stringify({type: "auth_response", nonce: clientNonce, proof}));
+          return;
+        }
+        if (phase !== "proof" || msg.type !== "auth_ok" ||
+            msg.proof !== await bridgeProof(key, "server", serverNonce, clientNonce)) throw new Error("Server authentication failed");
+        if (ws !== socket) { key = null; return; }
+        phase = "ready";
+        bridgeSessions.set(socket, {key, serverNonce, clientNonce, incoming: 0, outgoing: 0, sendQueue: Promise.resolve()});
+        key = null;
+        authenticatedSockets.add(socket);
+        connectionError = "";
+        clearTimeout(connectTimer);
+        connectTimer = null;
+        await initializeAccount(socket);
+        return;
+      }
+      const session = bridgeSessions.get(socket);
+      if (msg.type !== "secure" || !Number.isSafeInteger(msg.seq) || msg.seq !== session.incoming + 1 ||
+          typeof msg.body !== "string" || msg.proof !== await bridgeProof(session.key, "server-message", serverNonce, clientNonce, `|${msg.seq}|${msg.body}`)) {
+        throw new Error("Invalid authenticated message");
+      }
+      if (ws !== socket) return;
+      session.incoming++;
+      handleAction(JSON.parse(msg.body)).catch(reportError);
+    }).catch(() => {
+      if (!connectionError) connectionError = "自动认证失败，请确认软件与扩展已同步更新";
+      disconnected();
+      try { socket.close(1008, "Bridge authentication failed"); } catch {}
+    });
   };
   socket.onclose = disconnected;
   socket.onerror = () => {
@@ -742,7 +821,7 @@ function connect(i = 0) {
 }
 function requestConnection() {
   if (ws?.readyState === WebSocket.OPEN) {
-    if (!avatarBusy && !avatarStarting) initializeAccount(ws).catch(reportError);
+    if (authenticatedSockets.has(ws) && !avatarBusy && !avatarStarting) initializeAccount(ws).catch(reportError);
     return;
   }
   if (ws?.readyState === WebSocket.CONNECTING) return;
@@ -784,7 +863,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!popup && !pageCommands.includes(msg.cmd)) return;
   if (pageCommands.includes(msg.cmd) && !taskPage) return;
   if (msg.cmd === "connection_status" && popup) {
-    sendResponse({connected: ws?.readyState === WebSocket.OPEN});
+    sendResponse({connected: !!(ws?.readyState === WebSocket.OPEN && authenticatedSockets.has(ws)), error: connectionError});
     return;
   }
   if (msg.cmd === "fb_avatar_activate") {
