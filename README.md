@@ -55,9 +55,13 @@ python server.py
 
 ## 连接账号
 
+通信组件新实现的文件版本为 `0.8.1.1`，约 7.5 KiB。更新时先关闭主程序，完整解压新包，再运行根目录的 `FB_server.exe`，不要仅覆盖主程序而保留 conf 中的旧通信组件。
+
 启动软件后会自动注册当前用户的 Native Messaging 组件。扩展自动获取凭据，完成双向认证后连接；无需输入、复制或保存配对码。显示“已连接（自动认证）”后即可使用，后续自动重连。
 
-发布包根目录只需运行 `FB_server.exe`；`conf/FB_bridge_host.exe` 是供浏览器后台调用的通信组件，不需要手动打开，请保留它的目录位置。软件每次启动会更新 Chrome、Edge 和 Chromium 的当前用户注册路径，移动软件后重新启动即可；无需管理员权限。源码启动自动生成 Python 启动器，无需先打包组件。组件缺失、权限不足或组织策略禁止 Native Messaging 时会提示错误，不退回无认证连接。
+主程序按当前 Windows 用户和登录会话保持单实例；再次打开会恢复并激活已有窗口，不重复启动服务。
+
+发布包根目录只需运行 `FB_server.exe`；`conf/FB_bridge_host.exe` 是供浏览器后台调用的通信组件，使用独立的无界面 Windows/.NET 组件，不启动 Python、脚本或子进程；不需要手动打开，请保留它的目录位置。软件每次启动会更新 Chrome、Edge 和 Chromium 的当前用户注册路径，移动软件后重新启动即可；无需管理员权限。源码启动会在后台静默编译并缓存同一个无界面组件，不再注册 cmd/Python 启动脚本。组件使用 Windows 系统 .NET Framework 4.x，没有新增 NuGet 包；源码构建需要系统 C# 编译器。组件缺失、权限不足或组织策略禁止 Native Messaging 时会提示错误，不退回无认证连接。
 
 凭据保存在 `%LOCALAPPDATA%/BrowserAgent/NativeBridge/credential.dpapi`，由当前用户 DPAPI 加密，不写入仓库、发行包、日志或扩展存储。回环消息有双向认证、签名及递增序号，但没有加密，也不防御同一 Windows 用户已被控制的情形。需要重置时先关闭所有软件实例，再删除该凭据文件并重新启动。
 
@@ -153,7 +157,7 @@ v0.8 汇总了账号头像展示、浏览器前台定位、头像菜单兼容、
 ```powershell
 $iconFolder = (Resolve-Path "WS Browser Bridge/icon").Path
 python -m PyInstaller --noconfirm --onefile --windowed --name FB_server --specpath build --icon "$iconFolder/bridge.ico" --add-data "$iconFolder;WS Browser Bridge/icon" server.py
-python -m PyInstaller --noconfirm --onefile --console --name FB_bridge_host --distpath dist/conf --specpath build native_bridge.py
+.\tools\build_native_host.ps1 -OutputPath "dist/conf/FB_bridge_host.exe"
 ```
 
 上述 Windows 命令包含软件窗口图标和扩展图标资源，输出为 `dist/FB_server.exe` 和 `dist/conf/FB_bridge_host.exe`。本机已有的 `server.spec` 也已配置图标，可使用 `python -m PyInstaller --noconfirm server.spec` 构建桌面程序，通信组件仍需按上面的命令单独构建；仓库目前将该本机配置、`build`、`dist` 和 `release` 设为忽略文件。
@@ -164,7 +168,10 @@ python -m PyInstaller --noconfirm --onefile --console --name FB_bridge_host --di
 server.py                        本地界面、账号管理和 WebSocket 服务
 config_store.py                  软件目录定位、头像目录配置读写
 bridge_security.py               双向认证、消息签名及来源校验
-native_bridge.py                 Native Messaging、DPAPI 和当前用户自动注册
+native_bridge.py                 DPAPI、当前用户注册及源码模式后台编译
+native_host/BridgeHost.cs         独立无界面 Native Messaging 组件
+tools/build_native_host.ps1       系统 C# 编译器构建 Windows GUI EXE
+single_instance.py               单实例互斥、重复启动通知及已有窗口恢复
 requirements.lock               Windows/Python 3.11+ 完整依赖版本与 wheel 哈希
 system_theme.py                  Windows 应用深浅色偏好读取
 server.spec                      本地打包配置

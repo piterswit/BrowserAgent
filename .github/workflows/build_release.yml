@@ -69,7 +69,7 @@ jobs:
       - name: Build Native Messaging Host
         shell: powershell
         run: |
-          python -m PyInstaller native_bridge.py --onefile --console --clean --noconfirm --specpath build --name FB_bridge_host
+          .\tools\build_native_host.ps1 -OutputPath "dist/FB_bridge_host.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Create Release Folder

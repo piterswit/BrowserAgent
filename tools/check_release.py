@@ -5,6 +5,7 @@ import ast
 import json
 from pathlib import Path
 import re
+import struct
 import zipfile
 
 
@@ -44,6 +45,23 @@ def check_executable(path):
             raise ValueError(f"Executable is missing GUI asset: {asset}")
 
 
+def check_native_host_image(data):
+    """Reject an old Python launcher or console build accidentally copied into a release."""
+    try:
+        offset = struct.unpack_from("<I", data, 0x3c)[0]
+        optional = offset + 24
+        magic = struct.unpack_from("<H", data, optional)[0]
+        if data[:2] != b"MZ" or data[offset:offset + 4] != b"PE\0\0" or magic not in (0x10b, 0x20b):
+            raise ValueError("Invalid native host PE image")
+        subsystem = struct.unpack_from("<H", data, optional + 68)[0]
+        directories = optional + (96 if magic == 0x10b else 112)
+        clr_address, clr_size = struct.unpack_from("<II", data, directories + 14 * 8)
+        if subsystem != 2 or not clr_address or not clr_size:
+            raise ValueError("Native host must be the windowless .NET build, not a console/Python launcher")
+    except struct.error as error:
+        raise ValueError("Truncated native host PE image") from error
+
+
 def check_archive(path, tag):
     prefix = f"FB_Auto_Active_{tag}/"
     with zipfile.ZipFile(path) as archive:
@@ -71,6 +89,7 @@ def check_archive(path, tag):
             raise ValueError("Packaged executable is empty")
         if archive.getinfo(native_host).file_size == 0:
             raise ValueError("Native Messaging host is empty")
+        check_native_host_image(archive.read(native_host))
 
 
 def main():

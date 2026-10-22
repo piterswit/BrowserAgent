@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import struct
+import subprocess
 import sys
 import tempfile
 
@@ -106,6 +107,38 @@ def ensure_secret(folder=None):
         kernel.CloseHandle(handle)
 
 
+def source_native_host(folder):
+    """Compile a cached windowless host directly, never register a shell launcher."""
+    source = Path(__file__).resolve().parent / "native_host" / "BridgeHost.cs"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    output = folder / f"FB_bridge_host-{digest}.exe"
+    if output.is_file() and output.stat().st_size > 0:
+        return output
+    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+    if not compiler.is_file():
+        compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework/v4.0.30319/csc.exe"
+    if not compiler.is_file():
+        raise OSError("Windows .NET Framework C# compiler unavailable")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=folder, suffix=".exe", delete=False) as handle:
+            temporary = Path(handle.name)
+        result = subprocess.run([str(compiler), "/nologo", "/target:winexe", "/platform:anycpu",
+            "/optimize+", "/debug-", "/warnaserror+", "/reference:System.Security.dll",
+            "/reference:System.Runtime.Serialization.dll", f"/out:{temporary}", str(source)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
+        if result.returncode:
+            raise OSError("Unable to build windowless Native Messaging host")
+        os.replace(temporary, output)
+        return output
+    except subprocess.TimeoutExpired as error:
+        raise OSError("Native host compiler timed out") from error
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+
+
 def prepare_native_bridge(folder=None, executable=None, frozen=None):
     """Register the host in HKCU on startup, repairing paths after a move."""
     import winreg
@@ -113,22 +146,12 @@ def prepare_native_bridge(folder=None, executable=None, frozen=None):
     secret = ensure_secret(folder)
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     executable = Path(executable or sys.executable).resolve()
-    if not frozen and executable.name.lower() == "pythonw.exe":
-        executable = executable.with_name("python.exe")
     if frozen:
         host_path = executable.parent / "conf" / "FB_bridge_host.exe"
         if not host_path.is_file():
             raise OSError("Missing conf/FB_bridge_host.exe")
     else:
-        # Source checkouts use a quoted Python launcher; release builds use a console EXE.
-        host_path = folder / "host.cmd"
-        script = Path(__file__).resolve()
-        paths = (str(executable), str(script))
-        if any(any(c in path for c in '\r\n"') for path in paths):
-            raise ValueError("Invalid launcher path")
-        python_path, script_path = (p.replace("%", "%%") for p in paths)
-        launcher = f'@echo off\nsetlocal DisableDelayedExpansion\nchcp 65001 >nul\n"{python_path}" "{script_path}" "%~1"\n'
-        atomic_write(host_path, launcher.replace("\n", "\r\n").encode("utf-8"))
+        host_path = source_native_host(folder)
     manifest = {"name": HOST_NAME, "description": "BrowserAgent automatic bridge authentication",
                 "path": str(host_path), "type": "stdio", "allowed_origins": [EXTENSION_ORIGIN]}
     manifest_path = folder / "host.json"
@@ -172,13 +195,60 @@ def serve_native(origin, input_stream, output_stream, folder=None):
     return 0
 
 
+class NativePipe:
+    """Use Chrome's inherited pipe handles even in a windowed/no-console EXE."""
+    def __init__(self, handle, kernel):
+        self.handle, self.kernel = handle, kernel
+
+    def read(self, size):
+        buffer = ctypes.create_string_buffer(size)
+        count = wintypes.DWORD()
+        if not self.kernel.ReadFile(self.handle, buffer, size, ctypes.byref(count), None):
+            if ctypes.get_last_error() == 109:  # ERROR_BROKEN_PIPE
+                return b""
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw[:count.value]
+
+    def write(self, data):
+        offset = 0
+        while offset < len(data):
+            buffer = ctypes.create_string_buffer(data[offset:])
+            count = wintypes.DWORD()
+            if not self.kernel.WriteFile(self.handle, buffer, len(data) - offset, ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not count.value:
+                raise OSError("Native pipe closed")
+            offset += count.value
+
+    def flush(self):
+        pass  # WriteFile is synchronous; no Python userspace buffer.
+
+
+def native_streams():
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel.GetFileType.restype = wintypes.DWORD
+    for name in ("ReadFile", "WriteFile"):
+        function = getattr(kernel, name)
+        function.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        function.restype = wintypes.BOOL
+    handles = [kernel.GetStdHandle(number & 0xffffffff) for number in (-10, -11)]
+    if any(not handle or kernel.GetFileType(handle) != 3 for handle in handles):
+        raise OSError("Native Messaging requires inherited pipes")
+    return tuple(NativePipe(handle, kernel) for handle in handles)
+
+
 def main():
-    if sys.platform != "win32":
+    if sys.platform != "win32" or len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
         return 1
-    import msvcrt
-    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-    return serve_native(sys.argv[1] if len(sys.argv) > 1 else "", sys.stdin.buffer, sys.stdout.buffer)
+    try:
+        input_stream, output_stream = native_streams()
+        return serve_native(sys.argv[1], input_stream, output_stream)
+    except (OSError, ValueError):
+        return 1
 
 
 if __name__ == "__main__":

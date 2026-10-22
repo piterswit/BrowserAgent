@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +15,18 @@ SPEC.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    @staticmethod
+    def native_image(subsystem=2, managed=True):
+        data = bytearray(512)
+        data[:2] = b"MZ"
+        struct.pack_into("<I", data, 0x3c, 64)
+        data[64:68] = b"PE\0\0"
+        struct.pack_into("<H", data, 88, 0x10b)
+        struct.pack_into("<H", data, 88 + 68, subsystem)
+        if managed:
+            struct.pack_into("<II", data, 88 + 96 + 14 * 8, 0x2000, 72)
+        return bytes(data)
+
     def setUp(self):
         self.tag = "v" + json.loads(
             (release.EXTENSION / "manifest.json").read_text(encoding="utf-8")
@@ -31,7 +44,7 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(prefix + "FB_server.exe", b"test executable")
             if omit != "conf/FB_bridge_host.exe":
-                archive.writestr(prefix + "conf/FB_bridge_host.exe", b"test native host")
+                archive.writestr(prefix + "conf/FB_bridge_host.exe", self.native_image())
             archive.writestr(prefix + "README.md", "test readme")
             for file in release.EXTENSION.rglob("*"):
                 if not file.is_file():
@@ -53,6 +66,11 @@ class ReleaseTests(unittest.TestCase):
             path = Path(directory) / "release.zip"
             self.make_archive(path)
             release.check_archive(path, self.tag)
+
+    def test_console_and_python_launcher_native_images_rejected(self):
+        for image in (self.native_image(subsystem=3), self.native_image(managed=False), b"invalid"):
+            with self.assertRaises(ValueError):
+                release.check_native_host_image(image)
 
     def test_missing_asset_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

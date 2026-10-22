@@ -19,6 +19,7 @@ from config_store import load_configuration, save_configuration
 from system_theme import system_theme_name
 from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
+from single_instance import SingleInstance
 
 APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
@@ -729,10 +730,17 @@ class App:
 
 
 def main():
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
-    root = tb.Window(themename=system_theme_name(), iconphoto=None)
-    App(root)
-    root.mainloop()
+    instance = SingleInstance()
+    try:
+        if not instance.claim():
+            return
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
+        root = tb.Window(themename=system_theme_name(), iconphoto=None)
+        App(root)
+        instance.attach(root)
+        root.mainloop()
+    finally:
+        instance.close()
 
 
 if __name__ == "__main__":

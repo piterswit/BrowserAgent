@@ -7,6 +7,8 @@ import struct
 import sys
 import tempfile
 import unittest
+import re
+import subprocess
 from unittest.mock import patch
 
 import native_bridge as native
@@ -48,6 +50,9 @@ class NativeProtocolTests(unittest.TestCase):
         identity = "".join(chr(97 + n) for byte in digest for n in (byte >> 4, byte & 15))
         self.assertEqual(identity, native.EXTENSION_ID)
         self.assertIn("nativeMessaging", manifest["permissions"])
+        source = (Path(__file__).parents[1] / "native_host/BridgeHost.cs").read_text(encoding="utf-8")
+        origin = re.search(r'const string Origin = "([^"]+)"', source).group(1)
+        self.assertEqual(origin, native.EXTENSION_ORIGIN)
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows DPAPI and registry")
@@ -75,6 +80,8 @@ class WindowsCredentialTests(unittest.TestCase):
             manifest = json.loads((Path(directory) / "host.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["allowed_origins"], [native.EXTENSION_ORIGIN])
             self.assertEqual(manifest["type"], "stdio")
+            self.assertTrue(manifest["path"].endswith(".exe"))
+            self.assertFalse((Path(directory) / "host.cmd").exists())
             self.assertEqual(create.call_count, 6)
             self.assertTrue(all(call.args[0] == winreg.HKEY_CURRENT_USER for call in create.call_args_list))
             self.assertEqual(set_value.call_count, 6)
@@ -85,6 +92,48 @@ class WindowsCredentialTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 native.prepare_native_bridge(directory, Path(directory) / "FB_server.exe", frozen=True)
             create.assert_not_called()
+
+
+@unittest.skipUnless(sys.platform == "win32", "Compiled Windows native host")
+class CompiledNativeHostTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.host = native.source_native_host(Path(cls.temporary.name))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def invoke(self, origin, data):
+        return subprocess.run([str(self.host), origin], input=data, capture_output=True,
+                              creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+
+    def test_wrong_origin_receives_nothing(self):
+        result = self.invoke("chrome-extension://" + "a" * 32 + "/", b"")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, b"")
+
+    def test_invalid_requests_fail_closed_without_credentials(self):
+        packets = [b"", struct.pack("<I", 4097), struct.pack("<I", 2) + b"{}",
+                   struct.pack("<I", 2) + b"[]", struct.pack("<I", 3) + b"{",
+                   struct.pack("<I", 17) + b'{"cmd":"execute"}']
+        for packet in packets:
+            result = self.invoke(native.EXTENSION_ORIGIN, packet)
+            self.assertNotIn(b'"key"', result.stdout)
+            self.assertEqual(result.stderr, b"")
+            if result.stdout:
+                size = struct.unpack("<I", result.stdout[:4])[0]
+                self.assertEqual(size, len(result.stdout) - 4)
+                self.assertIn("error", json.loads(result.stdout[4:]))
+
+    def test_compiled_host_is_gui_and_reused_without_a_shell(self):
+        data = self.host.read_bytes()
+        offset = struct.unpack_from("<I", data, 0x3c)[0]
+        self.assertEqual(data[offset:offset + 4], b"PE\0\0")
+        self.assertEqual(struct.unpack_from("<H", data, offset + 24 + 68)[0], 2)
+        self.assertEqual(native.source_native_host(Path(self.temporary.name)), self.host)
 
 
 if __name__ == "__main__":
