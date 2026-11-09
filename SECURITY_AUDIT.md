@@ -4,6 +4,27 @@
 
 审核结论：**通过（本次范围内；保留已确认的依赖维护及条件性风险）**。保留现有 WebSocket 及业务流程，新增可信凭据引导、DPAPI 存储、双向认证及逐消息签名，不再采用“接受无认证连接”的处理方式。不承诺抵御同一 Windows 用户环境已被控制的情形。
 
+### 当前发布版本复核（2026-10-22）
+
+被审业务源码为 `v0.8.1 / 37eec9ca0202c5ca573a659c661d3ef789f10766`，复核开始时工作区干净。沿用本会话逐文件审核基线，重新检查当前入口、数据流、凭据存储与 CI；本轮未发现新增的、需要直接修改业务代码的问题。以下“已修复”记录是当前版本已包含的修复，不表示此次为了截图又修改了功能。
+
+**通过标准：本次约定范围内未发现未处置的可利用 Critical / High 问题；既有 9 项修复保留，2 项依赖关注项已有开发者决定，回归与构建通过。** 这是一份有范围和例外的工程审核结论，不是第三方认证或“零漏洞”保证。功能行为按开发者已确认的业务需求评估；既往发布、Git 历史和其他部署不在本次复核范围。
+
+| 本轮复核证据 | 结果 |
+| --- | --- |
+| Python 既有测试 | 64 / 64 通过，见 `security-audit/recheck-python-verified.txt` |
+| JavaScript 既有测试 | 300 / 300 通过，见 `security-audit/recheck-javascript.txt` |
+| 3 个既有真实 Chromium 模拟页面检查 | 活跃、交互 UI、头像检查通过；不操作真实账号 |
+| 当前锁文件 pip-audit OSV / PyPI | 两源均 10 包、0 命中；分别见 `recheck-osv.json` / `recheck-pypi.json`，不覆盖官方 Arrow 公告 |
+| 重新构建 | PyInstaller 桌面 EXE、C# 无界面组件成功；EXE 资源与版本检查通过 |
+| 当前本地 7z | CRC 通过，主程序/组件与既有验证构建一致，扩展文件与源码逐文件一致 |
+| 当前凭据扫描 | 检查 4,822 个文件/归档成员，无读取失败；2 个命中人工确认为 Tcl HTTP 和 Python urllib 标准库文档示例，无确认真实凭据泄露 |
+| 敏感文件 | `.env`、环境变体、私钥和 `conf/` 忽略生效，无相应已跟踪文件；无待轮换外部密钥 |
+
+本轮在线复核仍确认：[Pillow Arrow 公告](https://github.com/python-pillow/Pillow/security/advisories/GHSA-654x-cwwv-5j9c) 尚无修复版本；条件为特殊内存对齐及 Arrow 导出，当前生产源码没有相应路径。保留开发者已确认的 Pillow 13.0.0 决定。[websockets 安全政策](https://github.com/python-websockets/websockets/security) 仍仅为最新版提供安全更新，12.0 按已确认决定后续单独迁移。没有新增需要开发者作决定的事项。
+
+截图摘要见 [审核结果页面](D:/ML/Duty/BrowserAgent/security-audit/audit-result.html)。结论关联的本地 7z SHA256 为 `65d172b1282814e71c7b8670fa7bf32744f1b50127b3d9603993eb4611bf7864`。本轮仅更新审核文档、证据与结果页面，未重写已发布标签或上传替换附件。
+
 ## 1. 项目概况与范围
 
 - Python 桌面程序：Tkinter / ttkbootstrap，回环 WebSocket 服务；PyInstaller 打包 Windows EXE。
@@ -139,7 +160,7 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 | Python ↔ JavaScript 真实回环互通    | 真实 Chromium 扩展 → Native host EXE / 源码模式静默编译的 EXE → DPAPI → 双向认证及签名 Stop 确认通过；账号资料模拟，网页外网请求阻断 |
 | 哈希锁安装、pip check               | 通过，无依赖冲突                                 |
 | 最终 OSV / PyPI 双源审计            | 工具均零命中；不覆盖官方未修复 Arrow 公告                 |
-| PyInstaller 6.22.3 单文件构建      | 桌面及 Native host 均构建通过，认证/注册模块和 GUI 资源已打包                   |
+| PyInstaller 6.22.3 单文件构建      | 桌面由 PyInstaller 构建、Native host 由 C# 编译，认证/注册模块和 GUI 资源已打包                   |
 | check_release.py，tag v0.8.1   | EXE 版本、资源及实际 ZIP 内容检查通过，确认 conf 仅含通信组件，无用户配置     |
 | 打包 EXE 启动冒烟检查                 | 在独立临时目录隐藏启动成功，随附组件可读取 DPAPI 凭据并拒绝错误来源，随后关闭本次测试进程           |
 | Native Messaging 真实浏览器集成 | 发布组件和源码模式静默编译组件均通过：固定扩展 ID、DPAPI、双向认证及签名停止确认；不使用真实账号 |
@@ -149,7 +170,7 @@ setuptools 的 [GHSA-h35f-9h28-mq5c](https://github.com/pypa/setuptools/security
 
 真实浏览器集成证据见 [发布组件](D:/ML/Duty/BrowserAgent/security-audit/native-browser-integration.txt) 和 [源码模式](D:/ML/Duty/BrowserAgent/security-audit/native-browser-source.txt)。
 
-审核证据与测试日志保存在 [security-audit](D:/ML/Duty/BrowserAgent/security-audit)。本地构建包为 [FB_Auto_Active_v0.8.1_silent_host.zip](D:/ML/Duty/BrowserAgent/release/security-audit/FB_Auto_Active_v0.8.1_silent_host.zip)。无需输入的自动认证说明已写入 README；桌面、manifest 和 popup 版本统一为 0.8.1，软件和扩展须同步更新。没有创建提交、推送 tag 或发布远程 Release。
+审核证据与测试日志保存在 [security-audit](D:/ML/Duty/BrowserAgent/security-audit)。当前本地分发包为 [FB_自动活跃_v0.8.1.7z](D:/ML/Duty/BrowserAgent/release/security-audit/FB_自动活跃_v0.8.1.7z)。无需输入的自动认证说明已写入 README；桌面、manifest 和 popup 版本统一为 0.8.1，软件和扩展须同步更新。本会话后续已完成发布；当前审核结论绑定上述源码提交与本地分发包，发布过程不另作为部署安全审核。
 
 本次修改文件对应关系：桌面自动注册、认证入口及身份隔离在 server.py；认证签名及来源校验在 bridge_security.py；扩展通信、来源/地址校验在 bg.js；弹窗交互在 popup.html/popup.js；权限与版本在 manifest.json；依赖约束在 requirements.txt/requirements.lock；CI 固定版本和安装方式在工作流；忽略规则在 .gitignore；连接说明在 README。测试覆盖自动引导、认证签名、来源隔离、身份抢占及长任务中的 Stop。新增 native_bridge.py 实现自动注册、DPAPI 及原生消息协议；CI 和发布包校验强制包含通信组件。
 
