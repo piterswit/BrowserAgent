@@ -46,11 +46,14 @@ const PORTS=[
 
 let avatarBusy = false;
 let avatarStarting = false;
+let postBusy = false;
 function requireAvailableBrowser() {
   if (avatarBusy || avatarStarting) throw Object.assign(new Error("换头像进行中，请完成后再启动其他任务"), {name: "TaskBusyError"});
+  if (postBusy) throw Object.assign(new Error("发帖进行中，请完成后再启动其他任务"), {name: "TaskBusyError"});
 }
 const taskTabs = new Set();
 let avatarOperation = null;
+let postOperation = null;
 
 async function focusWindow(windowId) {
   const window = await chrome.windows.get(windowId);
@@ -449,6 +452,88 @@ async function runAvatarChange(filePath, expectedProfile) {
   }
 }
 
+async function runPost({task_id: taskId, text, image_path: imagePath, profile_url: profile}) {
+  if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) return;
+  const operationSocket = ws;
+  const report = (success, confirmed, detail) => {
+    safeSend({type: "post_result", task_id: taskId, success, confirmed, detail}, operationSocket);
+  };
+  try {
+    requireAvailableBrowser();
+    if (activeRun) throw new Error("当前账号正在活跃，请结束后再发帖");
+    if (typeof text !== "string" || !text.trim() || [...text].length > 5000) throw new Error("贴文内容无效");
+    if (typeof profile !== "string" || !profile.startsWith("https://www.facebook.com/")) throw new Error("账号尚未识别，请重新连接插件");
+    if (imagePath != null &&
+        (typeof imagePath !== "string" || !/^(?:[a-z]:[\\/]|\\\\)/i.test(imagePath) || !/\.(jpg|jpeg|png|webp)$/i.test(imagePath))) {
+      throw new Error("贴文图片路径无效");
+    }
+  } catch (error) {
+    report(false, false, error.message);
+    return;
+  }
+  postBusy = true;
+  let target;
+  let attached = false;
+  let chooserListener;
+  let timer;
+  let outcome;
+  try {
+    const tab = await createProfileTab();
+    target = {tabId: tab.id};
+    const operation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false, socket: operationSocket, profile};
+    postOperation = operation;
+    await verifyAvatarAccount(tab.id, profile);
+    if (ws !== operationSocket || operationSocket?.readyState !== WebSocket.OPEN) throw new Error("本地连接已断开");
+    const completed = new Promise((resolve, reject) => {
+      operation.resolve = resolve;
+      operation.reject = reject;
+      timer = setTimeout(() => reject(new Error("发帖等待超时，请检查 Facebook 页面")), 110000);
+    });
+    completed.catch(() => {});
+    if (imagePath) {
+      await chrome.debugger.attach(target, "1.3");
+      attached = true;
+      await chrome.debugger.sendCommand(target, "Page.enable");
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: true});
+      const upload = async node => {
+        await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {...node, files: [imagePath]});
+      };
+      operation.upload = () => operation.uploading ??= (async () => {
+        const {root} = await chrome.debugger.sendCommand(target, "DOM.getDocument", {depth: 1});
+        const selector = 'input[type="file"][data-browseragent-post-upload="true"]';
+        const {nodeId} = await chrome.debugger.sendCommand(target, "DOM.querySelector", {nodeId: root.nodeId, selector});
+        if (!nodeId) throw new Error("贴文图片控件已失效");
+        await upload({nodeId});
+      })();
+      chooserListener = (source, method, params) => {
+        if (source.tabId !== tab.id || method !== "Page.fileChooserOpened" || !params.backendNodeId) return;
+        operation.uploading ??= upload({backendNodeId: params.backendNodeId});
+        operation.uploading.catch(operation.reject);
+      };
+      chrome.debugger.onEvent.addListener(chooserListener);
+    }
+    await chrome.scripting.executeScript({target, func: request => { window.__fbPostRequest = request; },
+      args: [{operationId: operation.id, text: text.trim(), hasImage: !!imagePath}]});
+    await chrome.scripting.executeScript({target, files: ["publish_post.js"]});
+    const result = await completed;
+    outcome = [result.success, result.confirmed, result.detail];
+  } catch (error) {
+    outcome = postOperation?.submitted ? [true, false, "发布结果无法确认，请核对个人主页"] :
+      [false, false, String(error?.message || error).slice(0, 200)];
+  } finally {
+    clearTimeout(timer);
+    if (chooserListener) chrome.debugger.onEvent.removeListener(chooserListener);
+    if (attached) {
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: false}).catch(() => {});
+      await chrome.debugger.detach(target).catch(() => {});
+    }
+    if (target) await closeTaskTab(target.tabId);
+    postOperation = null;
+    postBusy = false;
+  }
+  report(...outcome);
+}
+
 let identityPromise = null;
 let identitySocket = null;
 async function initializeAccount(socket) {
@@ -705,6 +790,9 @@ async function handleAction(msg) {
       return await runAvatarChange(msg.file_path, msg.profile_url);
     } finally { avatarStarting = false; }
   }
+  if (msg.action === "publish_post") {
+    return runPost(msg);
+  }
   if (msg.action === "cancel_friend_requests") {
     await openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
   }
@@ -753,6 +841,7 @@ function connect(i = 0) {
     authenticatedSockets.delete(socket);
     bridgeSessions.delete(socket);
     key = null;
+    if (postOperation?.socket === socket) postOperation.reject?.(new Error("本地连接已断开"));
     if (trusted) stopActivity().catch(reportError);
     scheduleRetry(trusted ? PORTS.length : i + 1);
   };
@@ -859,7 +948,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const popup = !sender.tab && sender.url === chrome.runtime.getURL("popup.html");
   const taskPage = sender.tab && sender.frameId === 0 && isFacebook(sender.url);
   if (!popup && !taskPage) return;
-  const pageCommands = ["fb_avatar_activate", "fb_avatar_submitting", "fb_bridge_active_stopped", "fb_bridge_activity_stats", "fb_bridge_activity_detail"];
+  const pageCommands = ["fb_avatar_activate", "fb_avatar_submitting", "fb_post_upload", "fb_post_submitting", "fb_post_result", "fb_bridge_active_stopped", "fb_bridge_activity_stats", "fb_bridge_activity_detail"];
   if (!popup && !pageCommands.includes(msg.cmd)) return;
   if (pageCommands.includes(msg.cmd) && !taskPage) return;
   if (msg.cmd === "connection_status" && popup) {
@@ -879,6 +968,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (accepted) avatarOperation.submitted = true;
     sendResponse({accepted});
     return;
+  }
+  if (msg.cmd === "fb_post_result") {
+    if (postOperation?.tabId !== sender.tab?.id || postOperation.id !== msg.operationId) {
+      sendResponse({accepted: false});
+      return;
+    }
+    if (msg.submitted === true) postOperation.submitted = true;
+    postOperation.resolve?.({success: msg.success === true, confirmed: msg.confirmed === true,
+      submitted: msg.submitted === true, detail: typeof msg.detail === "string" ? msg.detail.slice(0, 200) : ""});
+    sendResponse({accepted: true});
+    return;
+  }
+  if (msg.cmd === "fb_post_upload" || msg.cmd === "fb_post_submitting") {
+    const operation = postOperation;
+    const valid = () => operation && postOperation === operation && operation.tabId === sender.tab?.id &&
+      operation.id === msg.operationId && ws === operation.socket && ws?.readyState === WebSocket.OPEN &&
+      !operation.submitted;
+    if (!valid()) {
+      sendResponse({accepted: false, detail: "发帖任务或本地连接已失效"});
+      return;
+    }
+    (async () => {
+      if (msg.cmd === "fb_post_upload") {
+        if (!operation.upload) throw new Error("未选择贴文图片");
+        await operation.upload();
+      } else {
+        await verifyAvatarAccount(operation.tabId, operation.profile);
+        if (!valid()) throw new Error("发帖任务已失效");
+        if (activeRun) throw new Error("当前账号正在活跃，请结束后再发帖");
+        operation.submitted = true;
+      }
+      sendResponse({accepted: true});
+    })().catch(error => sendResponse({accepted: false, detail: error.message}));
+    return true;
   }
   if (msg.cmd === "connect_py") {
     requestConnection();
@@ -961,6 +1084,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (url.searchParams.has("fb_bridge_auto_extension")) startActivity("home", tabId, true).catch(reportError);
 });
 chrome.tabs.onRemoved.addListener(tabId => {
+  if (postOperation?.tabId === tabId) postOperation.reject?.(new Error("发帖任务页已关闭"));
   if (activeRun?.tabId === tabId) stopActivity().catch(reportError);
 });
 setInterval(() => safeSend({type: "heartbeat"}), 15000);

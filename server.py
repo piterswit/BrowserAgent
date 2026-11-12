@@ -9,6 +9,7 @@ import random
 import sys
 import base64
 import struct
+from uuid import uuid4
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -20,6 +21,7 @@ from system_theme import system_theme_name
 from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
 from single_instance import SingleInstance
+from post_manager import PostManager, post_widget
 
 APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
@@ -44,7 +46,6 @@ class App:
     def __init__(self, root: tb.Window):
         self.root = root
         self.root.title(f"BrowserAgent v{APP_VERSION} · FB账号管理")
-        self.root.geometry("1020x700")
         self.root.minsize(min(860, self.root.winfo_screenwidth() - 64), min(960, self.root.winfo_screenheight() - 100))
         self.current_theme = None
         self.theme_timer = None
@@ -71,6 +72,8 @@ class App:
         self.ports = {}
         self.last_seen = {}  # 心跳包
         self.avatar_pending = set()
+        self.post_pending = {}
+        self.post_manager = None
         self.configuration = load_configuration()
         self.bridge_key = None
         try:
@@ -99,18 +102,24 @@ class App:
         self.current_theme = theme
         self.apply_theme_styles()
         self.apply_titlebar_theme()
+        post_manager = getattr(self, "post_manager", None)
+        if post_manager is not None and post_manager.winfo_exists():
+            self.apply_titlebar_theme(post_manager)
+            caption_window = post_manager.caption_window
+            if caption_window is not None and caption_window.winfo_exists():
+                self.apply_titlebar_theme(caption_window)
 
     def on_window_mapped(self, event):
         if event.widget is self.root:
             self.apply_titlebar_theme()
             self.root.after_idle(self.apply_titlebar_theme)
 
-    def apply_titlebar_theme(self):
+    def apply_titlebar_theme(self, target=None):
         try:
             ancestor = ctypes.windll.user32.GetAncestor
             ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
             ancestor.restype = ctypes.c_void_p
-            window = ancestor(self.root.winfo_id(), 2)
+            window = ancestor((self.root if target is None else target).winfo_id(), 2)
             if not window:
                 return
             set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
@@ -138,6 +147,7 @@ class App:
         style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
         style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
         style.configure("Muted.TLabel", foreground="#c4cbd3" if dark else "#596674")
+        PostManager.configure_styles(style, dark)
         for name, background, foreground, border, hover in (
             ("Action.TButton", "#343b42" if dark else "#f0f4f7", "#f2f4f6" if dark else "#26333f",
              "#677682" if dark else "#87939e", "#46545f" if dark else "#e4edf3"),
@@ -172,10 +182,10 @@ class App:
             self.theme_timer = self.root.after(2000, self.watch_system_theme)
 
     def center_window(self):
-        self.root.update_idletasks()
         screen_width, screen_height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        width = min(self.root.winfo_width(), screen_width - 64)
-        height = min(self.root.winfo_height(), screen_height - 100)
+        min_width, min_height = self.root.minsize()
+        width = min(max(1020, min_width), screen_width - 64)
+        height = min(max(700, min_height), screen_height - 100)
         self.root.geometry(f"{width}x{height}+{max(0, (screen_width - width) // 2)}+{max(0, (screen_height - height) // 2)}")
 
     def build_ui(self):
@@ -188,7 +198,9 @@ class App:
         self.themed_widget(tb.Label(header, text="BrowserAgent"), "Title.TLabel").pack(side="left")
         self.themed_widget(tb.Label(header, text="FB账号管理"), "Muted.TLabel").pack(side="left", padx=16, pady=(8, 0))
         self.account_summary = tk.StringVar(value="已连接 0  ·  已选中 0")
-        self.themed_widget(tb.Label(header, textvariable=self.account_summary), "Muted.TLabel").pack(side="right")
+        post_widget(ttk.Button, header, "PostPrimary.TButton", text="批量发帖",
+                    command=self.open_post_manager, padding=(14, 8)).pack(side="right")
+        self.themed_widget(tb.Label(header, textvariable=self.account_summary), "Muted.TLabel").pack(side="right", padx=(0, 16))
         tb.Separator(frm).pack(fill="x")
 
         avatar_frame = tb.Frame(frm)
@@ -251,6 +263,7 @@ class App:
         self.accounts.pop(client_id, None)
         self.ports.pop(client_id, None)
         self.avatar_pending.discard(client_id)
+        self.post_pending.pop(client_id, None)
         self.last_seen.pop(client_id, None)
 
         self.root.after(0, lambda c=client_id: self._remove_client_ui(c))
@@ -474,6 +487,14 @@ class App:
                     if data.get("success") is True and avatar_data:
                         self.root.after(0, lambda c=client_id, a=avatar_data: self.update_avatar_ui(c, a))
 
+                elif data.get("type") == "post_result" and client_id and self.clients.get(client_id) is ws:
+                    task_id = data.get("task_id")
+                    success = data.get("success") is True
+                    confirmed = data.get("confirmed") is True
+                    detail = str(data.get("detail") or "")[:200]
+                    self.root.after(0, lambda c=client_id, task=task_id, ok=success, sure=confirmed, d=detail:
+                                    self.finish_post(c, task, ok, sure, d))
+
         except websockets.ConnectionClosed as e:
             print(f"Connection closed: code={e.code}")
         except Exception as e:
@@ -538,6 +559,59 @@ class App:
         if directory:
             self.avatar_directory.set(directory)
 
+    def open_post_manager(self):
+        if self.post_manager is not None and self.post_manager.winfo_exists():
+            self.post_manager.lift()
+            self.post_manager.focus_set()
+            return
+        self.post_manager = PostManager(self)
+
+    def post_available(self, client_id):
+        return (client_id in self.clients and self.list_view.exists(client_id)
+                and self.list_view.set(client_id, "state") not in {
+                    "活跃首页", "活跃Reels", "活跃小组", "自定义活跃", "取消好友请求", "正在停止",
+                }
+                and client_id not in self.avatar_pending
+                and client_id not in self.post_pending
+                and bool(self.accounts.get(client_id, {}).get("profile_url")))
+
+    def start_post(self, assignments):
+        if not assignments or not all(
+            self.post_available(cid) and self.accounts.get(cid, {}).get("profile_url") == profile
+            for cid, _, profile, _ in assignments
+        ):
+            return False
+        for client_id, content, profile, image_path in assignments:
+            task_id = str(uuid4())
+            self.post_pending[client_id] = task_id
+            self.set_status(client_id, "正在发帖")
+            self.root.after(210000, lambda c=client_id, task=task_id: self.finish_post(
+                c, task, True, False, "未收到浏览器的发布结果，请先核对贴文。"))
+            asyncio.run_coroutine_threadsafe(self.send_post(client_id, task_id, content, image_path, profile), self.loop)
+        return True
+
+    async def send_post(self, client_id, task_id, text, image_path, profile):
+        try:
+            ws = self.clients.get(client_id)
+            if ws is None:
+                raise ValueError("浏览器已断开连接")
+            await ws.send(json.dumps({"action": "publish_post", "task_id": task_id, "text": text,
+                                      "image_path": str(image_path) if image_path else None,
+                                      "profile_url": profile}))
+        except Exception as exc:
+            self.root.after(0, lambda c=client_id, task=task_id, e=str(exc):
+                            self.finish_post(c, task, False, False, "发送失败: " + e))
+
+    def finish_post(self, client_id, task_id, success, confirmed, detail):
+        if not isinstance(task_id, str) or self.post_pending.get(client_id) != task_id:
+            return
+        self.post_pending.pop(client_id, None)
+        status = "发帖成功" if success and confirmed else "待核实" if success else "发帖失败"
+        self.set_status(client_id, status)
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "detail", detail or status)
+            self.list_view.item(client_id, tags=("success" if success and confirmed else "" if success else "error",))
+
     def finish_avatar(self, client_id, status):
         self.avatar_pending.discard(client_id)
         success = status == "头像更换成功"
@@ -548,7 +622,7 @@ class App:
             self.list_view.item(client_id, tags=("success" if success else "" if unconfirmed else "error",))
 
     def change_avatar(self):
-        targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending]
+        targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending and cid not in self.post_pending]
         if not targets:
             messagebox.showwarning("换头像", "请选择已连接且未在换头像的账号。", parent=self.root)
             return
@@ -598,6 +672,10 @@ class App:
         if client_id in self.avatar_pending and data.get("action") in {
                 "scroll30", "auto_reels", "auto_group", "auto_custom", "cancel_friend_requests", "stop_scroll"}:
             self.root.after(0, lambda c=client_id: self.set_activity_detail(c, "换头像进行中，未执行其他任务，请完成后再试"))
+            return
+        if client_id in self.post_pending and data.get("action") in {
+                "scroll30", "auto_reels", "auto_group", "auto_custom", "cancel_friend_requests", "stop_scroll"}:
+            self.root.after(0, lambda c=client_id: self.set_activity_detail(c, "发帖进行中，未执行其他任务，请完成后再试"))
             return
         ws = self.clients.get(client_id)
         if ws:
@@ -691,6 +769,9 @@ class App:
             if client_id in self.avatar_pending:
                 self.set_activity_detail(client_id, "换头像进行中，没有启动停止活跃操作")
                 continue
+            if client_id in self.post_pending:
+                self.set_activity_detail(client_id, "发帖进行中，没有启动停止活跃操作")
+                continue
             port = self.ports.get(client_id)
             if port is not None:
                 self.set_status(client_id, "正在停止")
@@ -736,8 +817,11 @@ def main():
             return
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
         root = tb.Window(themename=system_theme_name(), iconphoto=None)
+        # Let Tk finish building and positioning the desktop before its first paint.
+        root.withdraw()
         App(root)
         instance.attach(root)
+        root.deiconify()
         root.mainloop()
     finally:
         instance.close()
