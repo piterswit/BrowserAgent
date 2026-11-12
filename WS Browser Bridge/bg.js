@@ -47,9 +47,11 @@ const PORTS=[
 let avatarBusy = false;
 let avatarStarting = false;
 let postBusy = false;
+let coverOperation = null;
 function requireAvailableBrowser() {
   if (avatarBusy || avatarStarting) throw Object.assign(new Error("换头像进行中，请完成后再启动其他任务"), {name: "TaskBusyError"});
   if (postBusy) throw Object.assign(new Error("发帖进行中，请完成后再启动其他任务"), {name: "TaskBusyError"});
+  if (coverOperation) throw Object.assign(new Error("更换封面中，请完成后再启动其他任务"), {name: "TaskBusyError"});
 }
 const taskTabs = new Set();
 let avatarOperation = null;
@@ -70,6 +72,7 @@ async function activateTab(tabId) {
 async function locateBrowser() {
   const tabs = await chrome.tabs.query({});
   const tab = tabs.find(item => item.id === avatarOperation?.tabId) ||
+    tabs.find(item => item.id === coverOperation?.tabId) ||
     tabs.find(item => item.id === activeRun?.tabId) ||
     tabs.find(item => item.active && isFacebook(item.url) && !taskTabs.has(item.id)) ||
     tabs.find(item => isFacebook(item.url) && !taskTabs.has(item.id));
@@ -534,6 +537,144 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
   report(...outcome);
 }
 
+function currentCover(operation) {
+  return operation && coverOperation === operation && !operation.cancelled &&
+    Date.now() < operation.expires && ws === operation.socket &&
+    operation.socket?.readyState === WebSocket.OPEN && authenticatedSockets.has(operation.socket);
+}
+
+async function coverStep(operation, step) {
+  if (!currentCover(operation)) throw new Error("封面任务或本地连接已失效");
+  const results = await chrome.scripting.executeScript({
+    target: {tabId: operation.tabId},
+    func: async (id, name) => {
+      try {
+        if (window.__fbCover?.operationId !== id) throw new Error("封面页面脚本已失效");
+        return {value: await window.__fbCover[name]()};
+      } catch (error) { return {error: error.message}; }
+    },
+    args: [operation.id, step]
+  });
+  const result = results[0]?.result;
+  if (!result || result.error) throw new Error(result?.error || "封面任务页已关闭或跳转");
+  return result.value;
+}
+
+async function runCoverChange(msg) {
+  const socket = ws;
+  const report = (success, confirmed, detail) =>
+    safeSend({type: "cover_result", task_id: msg.task_id, success, confirmed, detail}, socket);
+  if (typeof msg.task_id !== "string" || !/^[0-9a-f-]{36}$/.test(msg.task_id)) return;
+  try {
+    requireAvailableBrowser();
+    if (activeRun) throw new Error("当前账号正在活跃，请结束后再更换封面");
+    if (typeof msg.file_path !== "string" || !/^(?:[a-z]:[\\/]|\\\\)/i.test(msg.file_path) ||
+        !/\.(jpg|jpeg|png|webp)$/i.test(msg.file_path)) throw new Error("封面图片路径无效");
+    if (typeof msg.profile_url !== "string" || !msg.profile_url.startsWith("https://www.facebook.com/")) {
+      throw new Error("账号尚未识别，请重新连接插件");
+    }
+  } catch (error) {
+    report(false, false, error.message);
+    return;
+  }
+  const operation = {id: crypto.randomUUID(), socket, profile: msg.profile_url,
+    submitted: false, cancelled: false, expires: Date.now() + 180000};
+  coverOperation = operation;
+  let target;
+  let attached = false;
+  let chooserListener;
+  let chooserTimer;
+  let cancel;
+  let deadline;
+  let outcome;
+  let workPromise;
+  const cancelled = new Promise((_, reject) => {
+    cancel = detail => {
+      operation.cancelled = true;
+      if (target) closeTaskTab(target.tabId).catch(() => {});
+      reject(new Error(detail));
+    };
+    operation.cancel = cancel;
+    deadline = setTimeout(() => cancel("封面更换等待超时，请核对个人主页"), 180000);
+  });
+  const check = async () => {
+    if (!currentCover(operation)) throw new Error("封面任务或本地连接已失效");
+    await verifyAvatarAccount(operation.tabId, operation.profile);
+    if (!currentCover(operation)) throw new Error("封面任务或本地连接已失效");
+  };
+  const work = async () => {
+    const tab = await createProfileTab();
+    if (!currentCover(operation)) {
+      await closeTaskTab(tab.id);
+      throw new Error("封面任务已失效");
+    }
+    operation.tabId = tab.id;
+    target = {tabId: tab.id};
+    await check();
+    await activateTab(tab.id);
+    await chrome.debugger.attach(target, "1.3");
+    attached = true;
+    await chrome.scripting.executeScript({target, files: ["change_cover.js"]});
+    await chrome.scripting.executeScript({target, func: (id, expires) => {
+      window.__fbCover.operationId = id;
+      window.__fbCover.expires = expires;
+    }, args: [operation.id, operation.expires]});
+    const mode = await coverStep(operation, "prepare");
+    await check();
+    await activateTab(tab.id);
+    if (mode === "input") {
+      const {root} = await chrome.debugger.sendCommand(target, "DOM.getDocument", {depth: 1, pierce: true});
+      const {nodeId} = await chrome.debugger.sendCommand(target, "DOM.querySelector",
+        {nodeId: root.nodeId, selector: 'input[data-fb-cover-upload="true"]'});
+      if (!nodeId) throw new Error("封面上传控件已失效");
+      await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {nodeId, files: [msg.file_path]});
+    } else if (mode === "chooser") {
+      await chrome.debugger.sendCommand(target, "Page.enable");
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: true});
+      const point = await coverStep(operation, "upload");
+      const chooser = new Promise((resolve, reject) => {
+        chooserListener = (source, method, params) => {
+          if (source.tabId === tab.id && method === "Page.fileChooserOpened") resolve(params);
+        };
+        chrome.debugger.onEvent.addListener(chooserListener);
+        chooserTimer = setTimeout(() => reject(new Error("等待封面文件选择器超时")), 30000);
+      });
+      const click = async () => {
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {type: "mousePressed", ...point, button: "left", clickCount: 1});
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {type: "mouseReleased", ...point, button: "left", clickCount: 1});
+      };
+      const [params] = await Promise.all([chooser, click()]);
+      if (!currentCover(operation) || !params.backendNodeId) throw new Error("封面上传控件已失效");
+      await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {backendNodeId: params.backendNodeId, files: [msg.file_path]});
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: false});
+    } else throw new Error("未识别封面上传方式");
+    await check();
+    return coverStep(operation, "save");
+  };
+  try {
+    workPromise = work();
+    const result = await Promise.race([workPromise, cancelled]);
+    outcome = [true, result?.confirmed === true,
+      result?.confirmed ? "个人主页封面已更新" : "已提交封面保存，请核对个人主页"];
+  } catch (error) {
+    outcome = [operation.submitted, false, operation.submitted ?
+      "已提交封面保存，结果待核实：" + error.message : error.message];
+  } finally {
+    operation.cancelled = true;
+    if (workPromise) await workPromise.catch(() => {});
+    clearTimeout(deadline);
+    clearTimeout(chooserTimer);
+    if (chooserListener) chrome.debugger.onEvent.removeListener(chooserListener);
+    if (attached) {
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: false}).catch(() => {});
+      await chrome.debugger.detach(target).catch(() => {});
+    }
+    if (target) await closeTaskTab(target.tabId);
+    if (coverOperation === operation) coverOperation = null;
+  }
+  report(...outcome);
+}
+
 let identityPromise = null;
 let identitySocket = null;
 async function initializeAccount(socket) {
@@ -646,7 +787,7 @@ async function stopActivity() {
   await chrome.storage.session.set({activitySuppressed: true}).catch(() => {});
   const snapshots = await stopTabs(epoch);
   const stats = run ? normalizeActivityStats(snapshots.find(snapshot => snapshot.runId === run.runId)?.stats || run.stats) : null;
-  if (activityEpoch === epoch && !avatarBusy && !avatarStarting) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
+  if (activityEpoch === epoch && !avatarBusy && !avatarStarting && !coverOperation) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
 }
 
 async function navigateActivity(tabId, url, epoch) {
@@ -793,6 +934,7 @@ async function handleAction(msg) {
   if (msg.action === "publish_post") {
     return runPost(msg);
   }
+  if (msg.action === "change_cover") return runCoverChange(msg);
   if (msg.action === "cancel_friend_requests") {
     await openAndInject("https://www.facebook.com/friends/requests", "cancel_friend_requests.js");
   }
@@ -842,6 +984,7 @@ function connect(i = 0) {
     bridgeSessions.delete(socket);
     key = null;
     if (postOperation?.socket === socket) postOperation.reject?.(new Error("本地连接已断开"));
+    if (coverOperation?.socket === socket) coverOperation.cancel("本地连接已断开");
     if (trusted) stopActivity().catch(reportError);
     scheduleRetry(trusted ? PORTS.length : i + 1);
   };
@@ -910,7 +1053,7 @@ function connect(i = 0) {
 }
 function requestConnection() {
   if (ws?.readyState === WebSocket.OPEN) {
-    if (authenticatedSockets.has(ws) && !avatarBusy && !avatarStarting) initializeAccount(ws).catch(reportError);
+    if (authenticatedSockets.has(ws) && !avatarBusy && !avatarStarting && !coverOperation) initializeAccount(ws).catch(reportError);
     return;
   }
   if (ws?.readyState === WebSocket.CONNECTING) return;
@@ -948,7 +1091,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const popup = !sender.tab && sender.url === chrome.runtime.getURL("popup.html");
   const taskPage = sender.tab && sender.frameId === 0 && isFacebook(sender.url);
   if (!popup && !taskPage) return;
-  const pageCommands = ["fb_avatar_activate", "fb_avatar_submitting", "fb_post_upload", "fb_post_submitting", "fb_post_result", "fb_bridge_active_stopped", "fb_bridge_activity_stats", "fb_bridge_activity_detail"];
+  const pageCommands = ["fb_avatar_activate", "fb_avatar_submitting", "fb_cover_activate", "fb_cover_submitting",
+    "fb_post_upload", "fb_post_submitting", "fb_post_result", "fb_bridge_active_stopped", "fb_bridge_activity_stats", "fb_bridge_activity_detail"];
   if (!popup && !pageCommands.includes(msg.cmd)) return;
   if (pageCommands.includes(msg.cmd) && !taskPage) return;
   if (msg.cmd === "connection_status" && popup) {
@@ -968,6 +1112,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (accepted) avatarOperation.submitted = true;
     sendResponse({accepted});
     return;
+  }
+  if (msg.cmd === "fb_cover_activate" || msg.cmd === "fb_cover_submitting") {
+    const operation = coverOperation;
+    const valid = () => currentCover(operation) && operation.tabId === sender.tab?.id &&
+      operation.id === msg.operationId && !operation.submitted;
+    if (!valid()) {
+      sendResponse({accepted: false});
+      return;
+    }
+    (async () => {
+      if (msg.cmd === "fb_cover_activate") await activateTab(operation.tabId);
+      else await verifyAvatarAccount(operation.tabId, operation.profile);
+      if (!valid()) throw new Error("封面任务已失效");
+      if (activeRun) throw new Error("当前账号正在活跃，请结束后再更换封面");
+      if (msg.cmd === "fb_cover_submitting") operation.submitted = true;
+      sendResponse({accepted: true});
+    })().catch(() => sendResponse({accepted: false}));
+    return true;
   }
   if (msg.cmd === "fb_post_result") {
     if (postOperation?.tabId !== sender.tab?.id || postOperation.id !== msg.operationId) {
@@ -1084,6 +1246,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (url.searchParams.has("fb_bridge_auto_extension")) startActivity("home", tabId, true).catch(reportError);
 });
 chrome.tabs.onRemoved.addListener(tabId => {
+  if (coverOperation?.tabId === tabId && !coverOperation.cancelled) coverOperation.cancel("封面任务页已关闭");
   if (postOperation?.tabId === tabId) postOperation.reject?.(new Error("发帖任务页已关闭"));
   if (activeRun?.tabId === tabId) stopActivity().catch(reportError);
 });

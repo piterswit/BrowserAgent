@@ -21,7 +21,7 @@ from system_theme import system_theme_name
 from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
 from single_instance import SingleInstance
-from post_manager import PostManager, post_widget
+from post_manager import PostManager, post_widget, available_images, shuffled_cycles
 
 APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
@@ -72,6 +72,7 @@ class App:
         self.ports = {}
         self.last_seen = {}  # 心跳包
         self.avatar_pending = set()
+        self.cover_pending = {}
         self.post_pending = {}
         self.post_manager = None
         self.configuration = load_configuration()
@@ -86,6 +87,7 @@ class App:
         self.build_ui()
         self.apply_theme_styles()
         self.avatar_directory.trace_add("write", self.schedule_config_save)
+        self.cover_directory.trace_add("write", self.schedule_config_save)
         self.root.protocol("WM_DELETE_WINDOW", self.close_application)
         self.schedule_config_save()
         self.center_window()
@@ -212,6 +214,17 @@ class App:
         self.themed_widget(tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, padding=(12, 8)), "Action.TButton").pack(side="left", padx=8)
         tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
 
+        cover_frame = tb.Frame(frm)
+        cover_frame.pack(fill="x", pady=(0, 12))
+        post_widget(ttk.Label, cover_frame, "PostLabel.TLabel", text="主页封面").pack(side="left", padx=6)
+        directory = self.configuration.get("cover_directory", "")
+        self.cover_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
+        post_widget(ttk.Entry, cover_frame, "Post.TEntry", textvariable=self.cover_directory).pack(side="left", fill="x", expand=True)
+        post_widget(ttk.Button, cover_frame, "Post.TButton", text="选择目录", command=self.choose_cover_directory,
+                    padding=(12, 8)).pack(side="left", padx=8)
+        post_widget(ttk.Button, cover_frame, "PostPrimary.TButton", text="更换封面",
+                    command=self.change_cover, padding=(12, 8)).pack(side="left")
+
         self.themed_widget(tb.Label(frm, text="账号操作"), "Section.TLabel").pack(anchor="w", pady=(0, 10))
         btnf = tb.Frame(frm)
         btnf.pack(fill="x", pady=(0, 12))
@@ -263,6 +276,7 @@ class App:
         self.accounts.pop(client_id, None)
         self.ports.pop(client_id, None)
         self.avatar_pending.discard(client_id)
+        self.cover_pending.pop(client_id, None)
         self.post_pending.pop(client_id, None)
         self.last_seen.pop(client_id, None)
 
@@ -495,6 +509,14 @@ class App:
                     self.root.after(0, lambda c=client_id, task=task_id, ok=success, sure=confirmed, d=detail:
                                     self.finish_post(c, task, ok, sure, d))
 
+                elif data.get("type") == "cover_result" and client_id and self.clients.get(client_id) is ws:
+                    task_id = data.get("task_id")
+                    success = data.get("success") is True
+                    confirmed = data.get("confirmed") is True
+                    detail = str(data.get("detail") or "")[:200]
+                    self.root.after(0, lambda c=client_id, task=task_id, ok=success, sure=confirmed, d=detail:
+                                    self.finish_cover(c, task, ok, sure, d))
+
         except websockets.ConnectionClosed as e:
             print(f"Connection closed: code={e.code}")
         except Exception as e:
@@ -538,6 +560,7 @@ class App:
     def persist_configuration(self):
         self.config_timer = None
         self.configuration["avatar_directory"] = self.avatar_directory.get().strip()
+        self.configuration["cover_directory"] = self.cover_directory.get().strip()
         try:
             save_configuration(self.configuration)
             return True
@@ -559,6 +582,66 @@ class App:
         if directory:
             self.avatar_directory.set(directory)
 
+    def choose_cover_directory(self):
+        directory = filedialog.askdirectory(parent=self.root, title="选择主页封面图片目录")
+        if directory:
+            self.cover_directory.set(directory)
+
+    def change_cover(self):
+        targets = [cid for cid in self.selected_targets() if self.post_available(cid)]
+        if not targets:
+            messagebox.showwarning("更换封面", "请选择已连接、已识别且当前空闲的账号。", parent=self.root)
+            return
+        try:
+            value = self.cover_directory.get().strip()
+            if not value:
+                raise ValueError("请选择封面图片目录。")
+            directory = Path(value).expanduser().resolve(strict=True)
+            images = available_images(directory)
+            if not images:
+                raise ValueError("目录中没有可用图片，请放入不超过 20 MB 的 JPG、PNG 或 WebP 图片。")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("更换封面", str(error), parent=self.root)
+            return
+        summary = f"将为 {len(targets)} 个账号随机更换个人主页封面，按 Facebook 默认位置保存。"
+        profiles = {cid: self.accounts[cid]["profile_url"] for cid in targets}
+        if len(images) < len(targets):
+            summary += "\n图片数量少于账号数，用完后会重新打乱复用。"
+        if not messagebox.askyesno("确认更换封面", summary, parent=self.root):
+            return
+        if not all(self.post_available(cid) and self.accounts[cid]["profile_url"] == profiles[cid] for cid in targets):
+            messagebox.showwarning("更换封面", "账号状态已变化，请重新选择后再试。", parent=self.root)
+            return
+        for client_id, image in zip(targets, shuffled_cycles(images)):
+            task_id = str(uuid4())
+            profile = profiles[client_id]
+            self.cover_pending[client_id] = task_id
+            self.set_status(client_id, "更换封面中")
+            self.root.after(240000, lambda c=client_id, task=task_id: self.finish_cover(
+                c, task, True, False, "未收到封面更换结果，请先核对个人主页。"))
+            asyncio.run_coroutine_threadsafe(self.send_cover(client_id, task_id, image, profile), self.loop)
+
+    async def send_cover(self, client_id, task_id, image, profile):
+        try:
+            ws = self.clients.get(client_id)
+            if ws is None:
+                raise ValueError("浏览器已断开连接")
+            await ws.send(json.dumps({"action": "change_cover", "task_id": task_id,
+                                      "file_path": str(image), "profile_url": profile}))
+        except Exception as error:
+            self.root.after(0, lambda c=client_id, task=task_id, detail=str(error):
+                            self.finish_cover(c, task, False, False, "发送失败: " + detail))
+
+    def finish_cover(self, client_id, task_id, success, confirmed, detail):
+        if not isinstance(task_id, str) or self.cover_pending.get(client_id) != task_id:
+            return
+        self.cover_pending.pop(client_id, None)
+        state = "封面已更新" if success and confirmed else "待核实" if success else "更换封面失败"
+        self.set_status(client_id, state)
+        if self.list_view.exists(client_id):
+            self.list_view.set(client_id, "detail", detail or state)
+            self.list_view.item(client_id, tags=("success" if success and confirmed else "" if success else "error",))
+
     def open_post_manager(self):
         if self.post_manager is not None and self.post_manager.winfo_exists():
             self.post_manager.lift()
@@ -572,6 +655,7 @@ class App:
                     "活跃首页", "活跃Reels", "活跃小组", "自定义活跃", "取消好友请求", "正在停止",
                 }
                 and client_id not in self.avatar_pending
+                and client_id not in self.cover_pending
                 and client_id not in self.post_pending
                 and bool(self.accounts.get(client_id, {}).get("profile_url")))
 
@@ -622,7 +706,8 @@ class App:
             self.list_view.item(client_id, tags=("success" if success else "" if unconfirmed else "error",))
 
     def change_avatar(self):
-        targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending and cid not in self.post_pending]
+        targets = [cid for cid in self.selected_targets() if cid in self.clients and cid not in self.avatar_pending
+                   and cid not in self.post_pending and cid not in self.cover_pending]
         if not targets:
             messagebox.showwarning("换头像", "请选择已连接且未在换头像的账号。", parent=self.root)
             return
@@ -669,6 +754,9 @@ class App:
             self.root.after(0, lambda c=client_id, s=f"发送失败: {exc}": self.finish_avatar(c, s))
 
     async def send(self,port,client_id,data):
+        if client_id in self.cover_pending and data.get("action") != "locate_browser":
+            self.root.after(0, lambda c=client_id: self.set_activity_detail(c, "更换封面中，请完成后再执行其他任务"))
+            return
         if client_id in self.avatar_pending and data.get("action") in {
                 "scroll30", "auto_reels", "auto_group", "auto_custom", "cancel_friend_requests", "stop_scroll"}:
             self.root.after(0, lambda c=client_id: self.set_activity_detail(c, "换头像进行中，未执行其他任务，请完成后再试"))
@@ -766,6 +854,9 @@ class App:
 
     def stop_scroll(self):
         for client_id in self.selected_targets():
+            if client_id in self.cover_pending:
+                self.set_activity_detail(client_id, "更换封面中，没有启动停止活跃操作")
+                continue
             if client_id in self.avatar_pending:
                 self.set_activity_detail(client_id, "换头像进行中，没有启动停止活跃操作")
                 continue

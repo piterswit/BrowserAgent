@@ -31,6 +31,8 @@ class AvatarServerTest(unittest.TestCase):
         exec(compile(ast.Module(body=[app_class], type_ignores=[]), str(source), "exec"), namespace)
         self.app = namespace["App"].__new__(namespace["App"])
         self.app.avatar_pending = set()
+        self.app.post_pending = {}
+        self.app.cover_pending = {}
         self.app.clients = {"a": object(), "b": object()}
         self.app.accounts = {}
         self.app.ports = {}
