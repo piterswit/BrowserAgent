@@ -167,3 +167,41 @@ test("an account switch before save authorization cannot submit", async () => {
   assert.equal((await b.reply("fb_cover_submitting")).accepted, false);
   assert.equal(vm.runInContext("coverOperation.submitted", b.context), false);
 });
+
+for (const state of ["cancelled", "expired", "active"]) {
+  test("post submission authorization respects " + state + " operation state", async () => {
+    const b = bridge();
+    vm.runInContext("postOperation = {id: crypto.randomUUID(), tabId: 99, socket: ws, profile: '" + profile +
+      "', expires: Date.now() + " + (state === "expired" ? "-1" : "10000") +
+      ", cancelled: " + (state === "cancelled") + ", submitted: false}", b.context);
+    assert.equal((await b.reply("fb_post_submitting")).accepted, state === "active");
+    assert.equal(vm.runInContext("postOperation.submitted", b.context), state === "active");
+  });
+}
+
+for (const stage of ["timeout", "cleanup"]) {
+  test("late post submission is refused during " + stage, async () => {
+    const b = bridge();
+    let expire, late;
+    b.context.setTimeout = (fn, delay) => delay === 110000 ? (expire = fn, undefined) : setTimeout(fn, delay);
+    const execute = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => {
+      if (options.files?.includes("publish_post.js")) {
+        if (stage === "timeout") {
+          expire();
+          late = await b.reply("fb_post_submitting");
+        } else throw new Error("page injection failed");
+      }
+      return execute(options);
+    };
+    b.chrome.tabs.remove = async () => {
+      if (stage === "cleanup") late = await b.reply("fb_post_submitting");
+    };
+    b.context.postRequest = {task_id: taskId, text: "Hello", profile_url: profile};
+    await vm.runInContext("runPost(postRequest)", b.context);
+    assert.equal(late.accepted, false);
+    assert.equal(b.messages.at(-1).success, false);
+    assert.equal(vm.runInContext("postBusy", b.context), false);
+    assert.equal(vm.runInContext("postOperation", b.context), null);
+  });
+}

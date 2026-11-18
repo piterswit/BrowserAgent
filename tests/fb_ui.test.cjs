@@ -140,6 +140,19 @@ test("failed, unsaved and in-progress feedback is never confirmed", () => {
   }
 });
 
+test("negated completion notices are never treated as success", () => {
+  const {ui} = fixture();
+  for (const [kind, value] of [
+    ["avatar", "Profile picture has not been updated"],
+    ["cover", "Cover photo has never been updated"],
+    ["post", "Publicación no publicada"],
+    ["cover", "Фото обложки не обновлено"],
+    ["cover", "Ảnh bìa chưa được cập nhật"],
+    ["cover", "封面照片尚未更新"],
+    ["post", "Post has not been published"],
+  ]) assert.equal(ui.success(kind, value), false, value);
+});
+
 test("accessible names use aria labels, visible text and referenced headings", () => {
   const {ui, document} = fixture("es");
   const node = {

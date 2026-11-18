@@ -803,7 +803,8 @@
   };
   const pending = /uploading|saving|updating|publishing|being (?:saved|updated|published|shared|uploaded)|in progress|正在|en cours|wird (?:gespeichert|aktualisiert|veröffentlicht|geteilt|hochgeladen)|siendo|está a ser|guardando|salvando|обновляется|アップロード中|저장 중/i;
   const success = (kind, value) => {
-    if (contains("error", value) || contains("blocked", value) || pending.test(value)) return false;
+    const negative = /(?:^|[^\p{L}\p{N}])(?:not|never|no|non|nicht|niet|не|ні|nie|não|nao|لم|لن)(?=$|[^\p{L}\p{N}])|n['’].*\bpas\b|未|没有|沒有|ไม่ได้|chưa|không|않|ません|されていません/iu;
+    if (contains("error", value) || contains("blocked", value) || pending.test(value) || negative.test(value)) return false;
     const subject = {avatar: "avatarSubject", cover: "coverSubject", post: "postSubject", story: "storySubject"}[kind];
     return !!subject && contains(subject, value) && contains(kind === "avatar" || kind === "cover" ? "updated" : "published", value);
   };

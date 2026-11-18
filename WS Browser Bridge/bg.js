@@ -480,17 +480,19 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
   let chooserListener;
   let timer;
   let outcome;
+  let operation;
   try {
     const tab = await createProfileTab();
     target = {tabId: tab.id};
-    const operation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false, socket: operationSocket, profile};
+    operation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false, cancelled: false,
+      expires: Date.now() + 110000, socket: operationSocket, profile};
     postOperation = operation;
     await verifyAvatarAccount(tab.id, profile);
     if (ws !== operationSocket || operationSocket?.readyState !== WebSocket.OPEN) throw new Error("本地连接已断开");
     const completed = new Promise((resolve, reject) => {
       operation.resolve = resolve;
-      operation.reject = reject;
-      timer = setTimeout(() => reject(new Error("发帖等待超时，请检查 Facebook 页面")), 110000);
+      operation.reject = error => { operation.cancelled = true; reject(error); };
+      timer = setTimeout(() => operation.reject(new Error("发帖等待超时，请检查 Facebook 页面")), 110000);
     });
     completed.catch(() => {});
     if (imagePath) {
@@ -524,6 +526,7 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
     outcome = postOperation?.submitted ? [true, false, "发布结果无法确认，请核对个人主页"] :
       [false, false, String(error?.message || error).slice(0, 200)];
   } finally {
+    if (operation) operation.cancelled = true;
     clearTimeout(timer);
     if (chooserListener) chrome.debugger.onEvent.removeListener(chooserListener);
     if (attached) {
@@ -1132,7 +1135,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.cmd === "fb_post_result") {
-    if (postOperation?.tabId !== sender.tab?.id || postOperation.id !== msg.operationId) {
+    if (!postOperation || postOperation.cancelled || Date.now() >= postOperation.expires ||
+        postOperation.tabId !== sender.tab?.id || postOperation.id !== msg.operationId) {
       sendResponse({accepted: false});
       return;
     }
@@ -1146,7 +1150,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const operation = postOperation;
     const valid = () => operation && postOperation === operation && operation.tabId === sender.tab?.id &&
       operation.id === msg.operationId && ws === operation.socket && ws?.readyState === WebSocket.OPEN &&
-      !operation.submitted;
+      !operation.cancelled && Date.now() < operation.expires && !operation.submitted;
     if (!valid()) {
       sendResponse({accepted: false, detail: "发帖任务或本地连接已失效"});
       return;
@@ -1155,6 +1159,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.cmd === "fb_post_upload") {
         if (!operation.upload) throw new Error("未选择贴文图片");
         await operation.upload();
+        if (!valid()) throw new Error("发帖任务已失效");
       } else {
         await verifyAvatarAccount(operation.tabId, operation.profile);
         if (!valid()) throw new Error("发帖任务已失效");
