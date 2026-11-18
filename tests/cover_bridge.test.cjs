@@ -17,7 +17,7 @@ function bridge({mode = "input", fail = "", confirmed = true} = {}) {
     windows: {getAll: async () => [{id: 1, focused: true}], get: async () => ({state: "normal"}),
       update: async () => {}, onRemoved: {addListener() {}}, onCreated: {addListener() {}}},
     tabs: {
-      create: async () => ({id: 99}), query: async () => [], get: async () => ({windowId: 1, url: profile}),
+      create: async () => ({id: 99}), query: async () => [{id: 1}, {id: 99}], get: async () => ({windowId: 1, url: profile}),
       update: async (id, options) => {
         if (options.url) for (const callback of listeners) callback(id, {status: "complete"}, {url: profile});
       },

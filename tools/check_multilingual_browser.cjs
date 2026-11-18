@@ -29,7 +29,7 @@ const languages = [
     composer: "สร้างโพสต์", photo: "รูปภาพ/วิดีโอ", remove: "ลบรูปภาพ", publish: "โพสต์", notice: "โพสต์เผยแพร่แล้ว"},
 ];
 
-function setupPost(labels, hasImage, deny) {
+function setupPost(labels, hasImage, deny, options = {}) {
   document.documentElement.lang = labels.language;
   document.documentElement.dir = labels.rtl ? "rtl" : "ltr";
   document.body.innerHTML = '<main><button id="composer"></button></main>';
@@ -48,6 +48,13 @@ function setupPost(labels, hasImage, deny) {
         window.fixtureUpload("upload");
       });
     }
+    if (message.cmd === "fb_post_submitting") {
+      if (options.cancelDuringAuth) window.__fbPostController.stop();
+      if (options.editDuringAuth) document.querySelector('[role="textbox"]').textContent = "User changed this draft";
+      if (options.removeDuringAuth) {
+        for (const node of document.querySelectorAll('img, [data-remove-photo]')) node.remove();
+      }
+    }
     return {accepted: !deny && (!hasImage || window.uploaded)};
   }}};
   document.querySelector("#composer").onclick = () => {
@@ -56,6 +63,7 @@ function setupPost(labels, hasImage, deny) {
     dialog.innerHTML = '<div contenteditable="true" role="textbox" style="min-height:60px;border:1px solid"></div>' +
       '<button id="photo"></button><input type="file" accept="image/*" hidden><button id="publish"></button>';
     const input = dialog.querySelector("input");
+    if (options.draft) dialog.querySelector('[role="textbox"]').textContent = "Existing user draft";
     const publish = dialog.querySelector("#publish");
     dialog.querySelector("#photo").textContent = labels.photo;
     publish.textContent = labels.publish;
@@ -68,11 +76,12 @@ function setupPost(labels, hasImage, deny) {
       image.onload = () => { window.uploaded = true; publish.disabled = false; };
       const remove = document.createElement("button");
       remove.setAttribute("aria-label", labels.remove);
+      remove.dataset.removePhoto = "true";
       dialog.append(image, remove);
     };
     publish.onclick = () => {
       if (deny || (hasImage && !window.uploaded)) throw new Error("premature publish");
-      if (dialog.querySelector('[role="textbox"]').innerText !== "A local multilingual fixture.") {
+      if (dialog.querySelector('[role="textbox"]').innerText !== (options.text || "A local multilingual fixture.")) {
         throw new Error("wrong post content");
       }
       window.clicks++;
@@ -86,7 +95,7 @@ function setupPost(labels, hasImage, deny) {
   };
 }
 
-async function postScenario(port, labels, hasImage, deny = false) {
+async function postScenario(port, labels, hasImage, deny = false, options = {}) {
   const target = await (await fetch("http://127.0.0.1:" + port + "/json/new?about:blank", {method: "PUT"})).json();
   const cdp = await connect(target.webSocketDebuggerUrl);
   try {
@@ -121,25 +130,32 @@ async function postScenario(port, labels, hasImage, deny = false) {
       if (await evaluate('location.hostname === "www.facebook.com" && document.readyState === "complete"')) break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    await evaluate("(" + setupPost + ")(" + JSON.stringify(labels) + "," + hasImage + "," + deny + ")");
-    await evaluate('window.__fbPostRequest = {operationId: "fixture", text: "A local multilingual fixture.", hasImage: ' + hasImage + "}");
+    await evaluate("(" + setupPost + ")(" + JSON.stringify(labels) + "," + hasImage + "," + deny + "," + JSON.stringify(options) + ")");
+    await evaluate("window.__fbPostRequest = " + JSON.stringify({operationId: "fixture",
+      text: options.text || "A local multilingual fixture.", hasImage}));
     await evaluate(uiSource + "\n" + postSource);
+    if (options.reinject) await evaluate(uiSource + "\n" + postSource);
     const result = await evaluate("Promise.race([window.postResult, new Promise((_, reject) => setTimeout(() => reject(new Error('Post fixture timed out')), 12000))])");
-    assert.equal(result.success, !deny, result.detail);
-    assert.equal(result.confirmed, !deny, result.detail);
-    assert.equal(await evaluate("window.clicks"), deny ? 0 : 1);
-    console.log(labels.language + ": " + (deny ? "denied post" : hasImage ? "photo post" : "text post") + " passed");
+    const expected = !deny && !options.draft && !options.cancelDuringAuth && !options.editDuringAuth && !options.removeDuringAuth;
+    assert.equal(result.success, expected, result.detail);
+    assert.equal(result.confirmed, expected, result.detail);
+    assert.equal(await evaluate("window.clicks"), expected ? 1 : 0);
+    console.log(labels.language + ": " + (deny ? "denied post" : hasImage ? "photo post" : "text post") +
+      " " + JSON.stringify(options) + " passed");
   } finally {
     cdp.close();
     await fetch("http://127.0.0.1:" + port + "/json/close/" + target.id);
   }
 }
 
-withBrowser(async port => {
+async function main() { await withBrowser(async port => {
   for (const labels of languages) {
     await scenario(port, labels, true, false, {fixedToolbar: true});
     await postScenario(port, labels, false);
     await postScenario(port, labels, true);
   }
   await postScenario(port, languages[8], true, true);
-}).catch(error => { console.error(error); process.exitCode = 1; });
+}); }
+
+module.exports = {postScenario, languages};
+if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });

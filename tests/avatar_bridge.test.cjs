@@ -228,6 +228,49 @@ test("identity failure still cleans up its own tab", async () => {
   assert.deepEqual(b.removed, [99]);
 });
 
+test("identity cleanup preserves the last page in its own window", async () => {
+  const b = bridge("input");
+  b.chrome.tabs.query = async filter => {
+    assert.equal(filter.windowId, 1);
+    return [{id: 99}];
+  };
+  const identity = await vm.runInContext("getFBIdentity()", b.context);
+  assert.equal(identity.fb_id, "123");
+  assert.deepEqual(b.removed, []);
+  assert.equal(vm.runInContext("taskTabs.size", b.context), 0);
+});
+
+for (const reason of ["pinned", "navigated", "lookup failed"]) {
+  test("task cleanup preserves pages when " + reason, async () => {
+    const b = bridge("input");
+    b.chrome.tabs.get = async () => {
+      if (reason === "lookup failed") throw new Error("window closed");
+      return {windowId: 1, pinned: reason === "pinned",
+        url: reason === "navigated" ? "https://example.com/" : "https://www.facebook.com/"};
+    };
+    await vm.runInContext("taskTabs.add(99); closeTaskTab(99)", b.context);
+    assert.deepEqual(b.removed, []);
+    assert.equal(vm.runInContext("taskTabs.size", b.context), 0);
+  });
+}
+
+test("concurrent task cleanup always keeps one page in the window", async () => {
+  const b = bridge("input");
+  const tabs = [{id: 99}, {id: 100}];
+  b.chrome.tabs.query = async () => [...tabs];
+  b.chrome.tabs.remove = async id => { b.removed.push(id); tabs.splice(tabs.findIndex(tab => tab.id === id), 1); };
+  await vm.runInContext("taskTabs.add(99); taskTabs.add(100); Promise.all([closeTaskTab(99), closeTaskTab(100)])", b.context);
+  assert.deepEqual(b.removed, [99]);
+  assert.deepEqual(tabs, [{id: 100}]);
+  assert.equal(vm.runInContext("taskTabs.size", b.context), 0);
+});
+
+test("cleanup never closes an ordinary user page", async () => {
+  const b = bridge("input");
+  await vm.runInContext("closeTaskTab(7)", b.context);
+  assert.deepEqual(b.removed, []);
+});
+
 test("closing a loading task tab rejects promptly without touching another tab", async () => {
   const b = bridge("input");
   b.chrome.tabs.update = async id => {

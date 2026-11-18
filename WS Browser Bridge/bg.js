@@ -54,6 +54,7 @@ function requireAvailableBrowser() {
   if (coverOperation) throw Object.assign(new Error("更换封面中，请完成后再启动其他任务"), {name: "TaskBusyError"});
 }
 const taskTabs = new Set();
+let taskTabCleanup = Promise.resolve();
 let avatarOperation = null;
 let postOperation = null;
 
@@ -101,7 +102,18 @@ async function createProfileTab(path = "/me") {
 }
 
 async function closeTaskTab(tabId) {
-  if (taskTabs.delete(tabId)) await chrome.tabs.remove(tabId).catch(() => {});
+  // Serialize cleanup: two task pages must not both decide the other keeps a window alive.
+  const cleanup = taskTabCleanup.then(async () => {
+    if (!taskTabs.delete(tabId)) return;
+    const tab = await chrome.tabs.get(tabId);
+    const siblings = await chrome.tabs.query({windowId: tab.windowId});
+    // Keep the last page, pinned pages and pages the user has navigated elsewhere.
+    if (tab.pinned || !siblings.some(item => item.id !== tabId) ||
+        (tab.url !== "about:blank" && !isFacebook(tab.url))) return;
+    await chrome.tabs.remove(tabId);
+  });
+  taskTabCleanup = cleanup.catch(() => {});
+  await taskTabCleanup;
 }
 
 async function readProfileIdentity(tabId) {
@@ -873,7 +885,8 @@ async function injectActivity(tabId, mode, runId, epoch) {
       window.__fbActivityRequest = request;
       window.__fbActivityLastError = null;
     },
-    args: [epoch, {runId, mode, stats: activeRun?.runId === runId ? activeRun.stats : normalizeActivityStats(null)}]
+    args: [epoch, {runId, mode, background: true,
+      stats: activeRun?.runId === runId ? activeRun.stats : normalizeActivityStats(null)}]
   });
   if (activityEpoch !== epoch) return;
   await chrome.scripting.executeScript({

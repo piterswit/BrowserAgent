@@ -665,9 +665,11 @@ class App:
                 and bool(self.accounts.get(client_id, {}).get("profile_url")))
 
     def start_post(self, assignments):
-        if not assignments or not all(
+        assignments = list(assignments or ())
+        if not assignments or len({entry[0] for entry in assignments}) != len(assignments) or not all(
             self.post_available(cid) and self.accounts.get(cid, {}).get("profile_url") == profile
-            for cid, _, profile, _ in assignments
+            and isinstance(content, str) and bool(content.strip()) and len(content) <= 5000
+            for cid, content, profile, _ in assignments
         ):
             return False
         for client_id, content, profile, image_path in assignments:
@@ -680,7 +682,11 @@ class App:
         return True
 
     async def send_post(self, client_id, task_id, text, image_path, profile):
+        if self.post_pending.get(client_id) != task_id:
+            return
         try:
+            if self.accounts.get(client_id, {}).get("profile_url") != profile:
+                raise ValueError("账号已变化，请重新选择后发布")
             ws = self.clients.get(client_id)
             if ws is None:
                 raise ValueError("浏览器已断开连接")

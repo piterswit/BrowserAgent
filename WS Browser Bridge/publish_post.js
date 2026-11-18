@@ -22,6 +22,12 @@
     words[key] = ui.pattern(action, words[key]);
   }
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const guard = () => {
+    if (stopped || window.__fbPostController?.operationId !== request.operationId) throw new Error("发帖任务已取消");
+    if (!/(^|\.)facebook\.com$/.test(location.hostname) || /\/(login|checkpoint)(\/|\.php|$)/.test(location.pathname)) {
+      throw new Error("请先登录 Facebook 并完成账号验证");
+    }
+  };
   const complete = (success, confirmed, submitted, detail) => {
     if (finished) return;
     finished = true;
@@ -30,6 +36,7 @@
   const waitFor = async (finder, timeout = 20000) => {
     const deadline = Date.now() + timeout;
     while (!stopped && Date.now() < deadline) {
+      guard();
       const result = finder();
       if (result) return result;
       await sleep(150);
@@ -37,6 +44,7 @@
     throw new Error(stopped ? "发帖任务已取消" : ui.describe("发布控件"));
   };
   const click = node => {
+    guard();
     if (!visible(node)) throw new Error("未找到可操作的发布控件");
     node.scrollIntoView({block: "center", inline: "center"});
     node.click();
@@ -45,14 +53,20 @@
   const matches = (node, matcher) => ui.values(node).some(value => matcher.test(value));
   const clickable = (scope, matcher) => ui.unique(
     [...scope.querySelectorAll(controls)].filter(visible), matcher);
-  const getEditor = dialog => [...dialog.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')].find(visible);
+  const getEditor = dialog => {
+    const editors = [...dialog.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')].filter(visible);
+    return editors.length === 1 ? editors[0] : null;
+  };
   const getValue = editor => editor?.isContentEditable ? editor.innerText : editor?.value;
   const normalize = value => value?.replace(/\s+/g, " ").trim();
   const send = async cmd => {
+    guard();
     const reply = await chrome.runtime.sendMessage({cmd, operationId: request.operationId});
+    guard();
     if (!reply?.accepted) throw new Error(reply?.detail || "发帖任务已失效");
   };
   const fill = editor => {
+    guard();
     editor.focus();
     if (editor.isContentEditable) {
       const range = document.createRange();
@@ -83,8 +97,11 @@
         return main && clickable(main, words.composer);
       });
       click(launch);
-      const postDialog = await waitFor(() => [...document.querySelectorAll('[role="dialog"]')]
-        .find(node => visible(node) && !previousDialogs.has(node) && getEditor(node)));
+      const postDialog = await waitFor(() => {
+        const dialogs = [...document.querySelectorAll('[role="dialog"]')]
+          .filter(node => visible(node) && !previousDialogs.has(node) && getEditor(node));
+        return dialogs.length === 1 ? dialogs[0] : null;
+      });
       const editor = getEditor(postDialog);
       if (getValue(editor)?.trim()) throw new Error("发布窗口已有文字，请先核对草稿");
       const imagePreview = () => clickable(postDialog, words.removeImage) ||
@@ -109,7 +126,7 @@
         catch { throw new Error("未确认图片已添加，已停止发布"); }
       }
       const findPublish = () => {
-        if (!visible(postDialog) || (request.hasImage && !imagePreview()) ||
+        if (!visible(postDialog) || (request.hasImage ? !imagePreview() : imagePreview()) ||
             [...postDialog.querySelectorAll('[role="progressbar"], [aria-busy="true"]')].some(visible)) return null;
         const buttons = [...postDialog.querySelectorAll('[role="button"], button')].filter(node =>
           visible(node) && matches(node, words.publish) && node.getAttribute("aria-disabled") !== "true" && !node.disabled);
@@ -118,7 +135,7 @@
       await waitFor(findPublish);
       await send("fb_post_submitting");
       const publish = findPublish();
-      if (!publish || normalize(getValue(getEditor(postDialog))) !== normalize(request.text)) {
+      if (!publish || getEditor(postDialog) !== editor || normalize(getValue(editor)) !== normalize(request.text)) {
         throw new Error("发布窗口或正文已变化，已停止发布");
       }
       const initial = new Set([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => text(node)));

@@ -1,7 +1,7 @@
 (() => {
   const ui = window.__fbUI;
   if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
-  const version = 13;
+  const version = 14;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -63,7 +63,8 @@
       const dismissals = new WeakMap();
       const path = location.pathname;
       const ctrl = {
-        run: true, started: false, runId: request.runId, mode, unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
+        run: true, started: false, runId: request.runId, mode, background: request.background === true,
+        unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
         deadline: mode === "reels" ? null : Date.now() + 5 * 60 * 1000,
         interactionScopes: new Set(),
         commentNavigation: null,
@@ -77,7 +78,7 @@
           if (this.deadline !== null && Date.now() >= this.deadline || location.pathname !== path && !sameViewer && !ownComment) this.stop(true);
           return this.run;
         },
-        pageAvailable() { return this.sessionActive() && !document.hidden && document.readyState !== "loading"; },
+        pageAvailable() { return this.sessionActive() && (this.background || !document.hidden) && document.readyState !== "loading"; },
         recentUserInput() { return !this.unattended && Date.now() - this.lastInput < 10000; },
         userInputChanged(since) { return !this.unattended && this.lastInput !== since; },
         stats: JSON.parse(JSON.stringify(request.stats || {attempted: {like: 0, comment: 0, share: 0}, confirmed: {like: 0, comment: 0, share: 0}})),
@@ -171,7 +172,7 @@
           if (!this.sessionActive()) return false;
           const focused = document.activeElement;
           let reason = "";
-          if (document.hidden) reason = "等待：目标页面不可见，恢复可见后继续";
+          if (document.hidden && !this.background) reason = "等待：目标页面不可见，恢复可见后继续";
           else if (document.readyState === "loading") reason = "等待：页面加载完成后继续";
           else if (this.recentUserInput()) reason = "暂停：等待用户操作结束";
           else if (!scope && this.commentNavigation && !this.commentNavigation.busy && location.pathname !== path) {
@@ -217,6 +218,8 @@
           const position = () => element === window ? (axis === "x" ? window.scrollX : window.scrollY) :
             (axis === "x" ? element.scrollLeft : element.scrollTop);
           const start = position();
+          // Hidden pages throttle short chained timers. Scroll once instead of animating many frames.
+          if (this.background && document.hidden) steps = 1;
           const frameDelay = Math.floor(20 + Math.random() * 20);
           let previous = 0;
           for (let i = 0; i < steps; i++) {

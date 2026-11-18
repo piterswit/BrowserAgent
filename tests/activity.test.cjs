@@ -26,10 +26,10 @@ function timers() {
     }
   };
 }
-function page(mode = "home") {
+function page(mode = "home", background = false) {
   const clock = timers(), listeners = new Map(), moves = [], messages = [];
   const window = {
-    __fbActivityRequest: {mode, runId: "run-1"},
+    __fbActivityRequest: {mode, runId: "run-1", background},
     addEventListener(name, fn) { listeners.set(name, fn); },
     removeEventListener(name, fn) { if (listeners.get(name) === fn) listeners.delete(name); },
     scrollBy(value) { moves.push(value.top); }
@@ -83,6 +83,48 @@ test("hidden pages, focused editors and recent user input suspend scrolling", as
   p.document.activeElement = null; p.listeners.get("wheel")({isTrusted: true});
   await p.clock.advance(9000); assert.equal(p.moves.length, 0);
   await p.clock.advance(20000); assert.ok(p.moves.length);
+});
+
+for (const mode of ["home", "group", "custom", "reels"]) {
+  test(`${mode}: background activity scrolls a hidden page and Stop cancels it`, async () => {
+    const p = page(mode, true);
+    p.document.hidden = true;
+    p.inject();
+    await p.clock.advance(22000);
+    assert.ok(p.moves.length);
+    const ctrl = p.window.__fbActivityCtrl;
+    assert.equal(ctrl.pageAvailable(), true);
+    assert.equal(ctrl.canAct(), true);
+    ctrl.stop();
+    const count = p.moves.length;
+    await p.clock.advance(600000);
+    assert.equal(p.moves.length, count);
+    assert.equal(p.clock.jobs.size, 0);
+  });
+}
+
+test("background activity preserves drafts and security checks while hidden", () => {
+  const p = page("home", true);
+  p.document.hidden = true; p.inject();
+  const ctrl = p.window.__fbActivityCtrl;
+  p.document.activeElement = {matches: () => true, value: "Do not send this draft"};
+  assert.equal(ctrl.canAct(), false);
+  assert.match(ctrl.detail, /未提交/);
+  p.document.activeElement = null;
+  const fixture = popupFixture(p, {text: "Security check", label: "Close"});
+  assert.equal(ctrl.canAct(), false);
+  assert.equal(fixture.clicks(), 0);
+  assert.match(ctrl.detail, /安全验证/);
+  ctrl.stop();
+});
+
+test("background tasks still stop after five minutes while hidden", async () => {
+  const p = page("home", true); p.document.hidden = true; p.inject();
+  await p.clock.advance(300001);
+  assert.ok(p.moves.length);
+  assert.equal(p.window.__fbActivityCtrl, null);
+  assert.equal(p.messages.length, 1);
+  assert.equal(p.clock.jobs.size, 0);
 });
 test("hidden and offscreen overlay nodes do not suspend every activity", async () => {
   const p = page();
@@ -549,6 +591,15 @@ test("a late injection failure cannot replace a newer task's status", async () =
   assert.equal(b.messages.at(-1).status, "auto_custom");
   assert.equal(vm.runInContext("activeRun.mode", b.context), "custom");
 });
+test("desktop activity requests enable background execution without activating a window", async () => {
+  const b = background(); await flush();
+  await vm.runInContext("startActivity('home')", b.context);
+  const request = b.injected.find(options => options.args?.[1]?.runId)?.args[1];
+  assert.equal(request.background, true);
+  assert.equal(request.mode, "home");
+  assert.equal(b.tabs[0].active, undefined);
+});
+
 test("failed connections retry with backoff and never create overlapping sockets", async () => {
   const b = background(); await flush();
   assert.equal(b.sockets.length, 1);
