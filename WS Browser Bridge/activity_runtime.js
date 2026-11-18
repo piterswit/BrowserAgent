@@ -1,5 +1,7 @@
 (() => {
-  const version = 12;
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
+  const version = 13;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -30,7 +32,7 @@
   };
   const isProtectedOverlay = node => {
     if (!floatingMenu(node)) return false;
-    const securityWords = /\b(?:log\s?in|sign\s?in|security check|captcha|verification code|two.factor|confirm your identity|checkpoint)\b|登录|登入|验证码|驗證碼|身份验证|身分驗證|安全检查|安全檢查/i;
+    const securityWords = ui.pattern("security", /\b(?:log\s?in|sign\s?in|security check|captcha|verification code|two.factor|confirm your identity|checkpoint)\b|登录|登入|验证码|驗證碼|身份验证|身分驗證|安全检查|安全檢查/i, {contains: true});
     const names = [node.getAttribute?.("aria-label"),
       ...(node.getAttribute?.("aria-labelledby") || "").split(/\s+/).filter(Boolean)
         .map(id => document.getElementById?.(id)?.innerText),
@@ -38,7 +40,8 @@
         .filter(heading => visible(heading) && !heading.closest?.('[role="article"]')).map(heading => heading.innerText)];
     if (names.some(value => securityWords.test(value || ""))) return true;
     if ([...(node.querySelectorAll?.('input, textarea, [contenteditable="true"]') || [])]
-      .some(field => field.type === "password" && visible(field))) return true;
+      .some(field => visible(field) && (field.type === "password" ||
+        (field.autocomplete || field.getAttribute?.("autocomplete")) === "one-time-code"))) return true;
     // Post text in a comment/player dialog is not a security prompt.
     if ((node.querySelectorAll?.('[role="article"], [role="feed"], video') || []).length) return false;
     return securityWords.test(node.innerText || "");
@@ -123,7 +126,7 @@
         dismissOverlays(scope = null) {
           const label = node => [node.getAttribute?.("aria-label"), node.innerText].filter(Boolean)
             .map(value => value.replace(/\s+/g, " ").trim());
-          const closeWords = /^(Close|Close (dialog|window|popup|menu)|Dismiss|Cancel|Not now|Maybe later|Close chat|Close conversation|Close chat window|Close chat with .+|关闭|关闭(窗口|弹窗|对话框|聊天|聊天窗口|对话)|关闭与.+的聊天|取消|暂不|稍后再说|以后再说|關閉|關閉(視窗|視窗對話方塊|對話方塊|彈窗|聊天室|聊天視窗|對話)|關閉與.+的聊天室|暫不|稍後再說|稍後再試|以後再說)$/i;
+          const closeWords = ui.pattern(["close","cancel","notNow","closeChat"], /^(Close|Close (dialog|window|popup|menu)|Dismiss|Cancel|Not now|Maybe later|Close chat|Close conversation|Close chat window|Close chat with .+|关闭|关闭(窗口|弹窗|对话框|聊天|聊天窗口|对话)|关闭与.+的聊天|取消|暂不|稍后再说|以后再说|關閉|關閉(視窗|視窗對話方塊|對話方塊|彈窗|聊天室|聊天視窗|對話)|關閉與.+的聊天室|暫不|稍後再說|稍後再試|以後再說)$/i);
           let blocked = "", closing = false;
           if (runtime.hasProtectedOverlay()) return {blocked: "暂停：登录或安全验证弹框需要人工处理", closing: false};
           for (const popup of new Set(document.querySelectorAll(popupSelector))) {
@@ -144,7 +147,7 @@
                 label(node).some(value => closeWords.test(value)) &&
                 (!node.closest || node.closest(popupSelector) === popup));
             if (!close && (!popup.dispatchEvent || typeof KeyboardEvent !== "function")) {
-              blocked = "暂停：可见弹窗没有可识别的关闭入口"; continue;
+              blocked = "暂停：可见弹窗没有可识别的关闭入口；" + ui.describe("关闭入口", popup); continue;
             }
             dismissals.set(popup, {count: attempt.count + 1, at: Date.now()});
             try {

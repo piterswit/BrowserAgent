@@ -3,7 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
-const source = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/cancel_friend_requests.js"), "utf8");
+const uiSource = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/fb_ui.js"), "utf8");
+const source = uiSource + "\n" + fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/cancel_friend_requests.js"), "utf8");
 
 async function run({sent, cancel, blocked = "", ariaOnly = false, hiddenWarning = false, stopAfterEntry = false}) {
   const clicks = [], alerts = [];
@@ -43,7 +44,13 @@ for (const labels of [
   {sent: "View sent requests", cancel: "Cancel request", blocked: "We couldn't process your request. Please try again later."},
   {sent: "查看已发送的请求", cancel: "取消请求", blocked: "无法处理你的请求，请稍后再试"},
   {sent: "查看已傳送邀請", cancel: "取消邀請", blocked: "無法處理你的邀請，請再試一次"},
-  {sent: "查看已發送的交友邀請", cancel: "取消交友邀請", blocked: "你暫時遭到封鎖"}
+  {sent: "查看已發送的交友邀請", cancel: "取消交友邀請", blocked: "你暫時遭到封鎖"},
+  {sent: "Ver solicitudes enviadas", cancel: "Cancelar solicitud", blocked: "Inténtalo más tarde"},
+  {sent: "Voir les invitations envoyées", cancel: "Annuler l'invitation", blocked: "Réessayez plus tard"},
+  {sent: "Gesendete Anfragen ansehen", cancel: "Anfrage abbrechen", blocked: "Versuche es später erneut"},
+  {sent: "عرض الطلبات المرسلة", cancel: "إلغاء الطلب", blocked: "يرجى المحاولة مرة أخرى"},
+  {sent: "送信済みリクエストを表示", cancel: "リクエストをキャンセル", blocked: "一時的にブロック"},
+  {sent: "Xem lời mời đã gửi", cancel: "Hủy lời mời", blocked: "Vui lòng thử lại"},
 ]) {
   test(`${labels.sent}: opens sent requests and cancels only the correct button`, async () => {
     const p = await run({...labels, blocked: ""});

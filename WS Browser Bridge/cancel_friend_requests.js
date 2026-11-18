@@ -1,4 +1,6 @@
 (() => {
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
 window.__fbCancelRequestsCtrl?.stop();
 const pending = new Map();
 const notices = new Set();
@@ -26,6 +28,9 @@ const requestLabels = {
     sent: /^(View sent requests|Sent requests|查看已发送请求|查看已发送的请求|查看发出的请求|已发送的请求|发出的请求|查看已傳送邀請|查看送出的邀請|查看已送出邀請|查看已送出的邀請|查看已發送的邀請|查看已發送的交友邀請|已傳送邀請|送出的邀請|已送出的邀請|已發送的邀請|已發送的交友邀請)$/i,
     blocked: /could(?:n['’]t| not) process|unable to process|please try again|try again later|temporarily blocked|无法处理|無法處理|请重试|请稍后再试|請重試|請再試一次|請稍後再試|暂时被封锁|暫時遭到封鎖|暫時被封鎖/i
 };
+requestLabels.cancel = ui.pattern("cancelRequest", requestLabels.cancel);
+requestLabels.sent = ui.pattern("sentRequests", requestLabels.sent);
+requestLabels.blocked = ui.pattern(["blocked", "security"], requestLabels.blocked, {contains: true});
 const requestText = el => (el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim();
 
 // ===== 基础工具 =====
@@ -133,14 +138,14 @@ async function main() {
     // 1. 获取页面上所有的弹窗
     let dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
 
-    // 【终极全语言定位逻辑】
+    // 在请求弹窗中匹配已发送请求或取消请求控件
     let modalContainer = dialogs.find(dialog => {
         return [...dialog.querySelectorAll('[role="heading"], h1, h2, [role="button"], button')]
             .some(el => requestLabels.sent.test(requestText(el)) || requestLabels.cancel.test(requestText(el)));
     });
 
     if (!modalContainer) {
-        alert("❌ 未能找到好友请求弹窗！\n请确保弹窗已经点开并显示在屏幕中央，然后再点插件。");
+        alert("❌ 未能找到好友请求弹窗！\n请确保弹窗已经打开。\n" + ui.describe("好友请求入口"));
         return;
     }
 
@@ -152,8 +157,8 @@ async function main() {
         return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
     }) || modalContainer;
 
-    showToast("🚀 简繁体全通吃雷达版已启动！\n正在一路滚到底，期间会严密监控FB警告弹窗...", "#1877f2");
-    console.log("%c========= 🚀 第一阶段：简繁体兼容·纯滚动长征 =========", "color: cyan; font-weight: bold;");
+    showToast("🚀 多语言识别已启动！\n正在一路滚到底，期间会严密监控FB警告弹窗...", "#1877f2");
+    console.log("%c========= 🚀 第一阶段：多语言识别·纯滚动长征 =========", "color: cyan; font-weight: bold;");
 
     let scrollCount = 0;
     let noChangeCount = 0;

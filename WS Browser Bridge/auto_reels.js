@@ -1,4 +1,6 @@
 (() => {
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
   const ctrl = window.__fbActivityRuntime?.create("reels");
   if (!ctrl) return;
   const random = (min, max) => min + Math.random() * (max - min);
@@ -7,6 +9,8 @@
     next: /^(Next( reel| video)?|Go to next (reel|video)|下一(个|個|部|段|条|條|則|则)?(短视频|短影片|视频|影片|Reel|Reels)?|下一个视频|下一個影片)$/i,
     previous: /^(Previous( reel| video)?|Go to previous (reel|video)|上一(个|個|部|段|条|條|則|则)?(短视频|短影片|视频|影片|Reel|Reels)?|上一个视频|上一個影片)$/i
   };
+  labels.next = ui.pattern("next", labels.next);
+  labels.previous = ui.pattern("previous", labels.previous);
   const visible = node => {
     if (!node?.isConnected || node.disabled || node.getAttribute("aria-disabled") === "true") return false;
     if (!window.__fbActivityRuntime.visible(node)) return false;

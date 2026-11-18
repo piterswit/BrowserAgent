@@ -69,7 +69,7 @@ function setup(kind, mode = "home") {
     Event: class { constructor(type) { this.type = type; } },
     KeyboardEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
     chrome: {runtime: {sendMessage: async () => {}}}});
-  for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
+  for (const file of ["fb_ui.js", "activity_runtime.js", "activity_interactions.js"]) {
     vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), context);
   }
   const ctrl = window.__fbActivityRuntime.create(mode);
@@ -923,7 +923,15 @@ test("pre-existing dialogs and offscreen targets are not clicked", async () => {
 for (const labels of [
   {like: "点赞", comment: "评论", share: "分享", story: "分享到你的快拍", publish: "发布", join: "加入小组", liked: "已点赞"},
   {like: "按讚", comment: "留言", share: "分享", story: "分享至你的限時動態", publish: "發佈", join: "加入社團", liked: "已讚"},
-  {like: "點讚", comment: "評論", share: "分享", story: "分享到限時動態", publish: "發表", join: "加入小組", liked: "已點讚"}
+  {like: "點讚", comment: "評論", share: "分享", story: "分享到限時動態", publish: "發表", join: "加入小組", liked: "已點讚"},
+  {like: "Me gusta", comment: "Comentar", share: "Compartir", story: "Compartir en tu historia", publish: "Publicar", join: "Unirte al grupo", liked: "Ya no me gusta"},
+  {like: "J’aime", comment: "Commenter", share: "Partager", story: "Partager dans votre story", publish: "Publier", join: "Rejoindre le groupe", liked: "Je n’aime plus"},
+  {like: "Gefällt mir", comment: "Kommentieren", share: "Teilen", story: "In deiner Story teilen", publish: "Posten", join: "Gruppe beitreten", liked: "Gefällt mir nicht mehr"},
+  {like: "Нравится", comment: "Комментировать", share: "Поделиться", story: "Поделиться в своей истории", publish: "Опубликовать", join: "Вступить в группу", liked: "Больше не нравится"},
+  {like: "أعجبني", comment: "تعليق", share: "مشاركة", story: "مشاركة في قصتك", publish: "نشر", join: "الانضمام إلى المجموعة", liked: "إلغاء الإعجاب"},
+  {like: "Thích", comment: "Bình luận", share: "Chia sẻ", story: "Chia sẻ lên tin của bạn", publish: "Đăng", join: "Tham gia nhóm", liked: "Bỏ thích"},
+  {like: "いいね！", comment: "コメント", share: "シェア", story: "ストーリーズにシェア", publish: "投稿", join: "グループに参加", liked: "いいね！を取り消す"},
+  {like: "좋아요", comment: "댓글", share: "공유하기", story: "내 스토리에 공유", publish: "게시", join: "그룹 가입", liked: "좋아요 취소"},
 ]) {
   for (const kind of ["like", "comment", "share", "join"]) test(`${labels[kind]}: localized interaction`, async () => {
     const p = setup(kind);

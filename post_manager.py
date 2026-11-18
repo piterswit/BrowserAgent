@@ -229,8 +229,8 @@ class PostManager(tk.Toplevel):
     @staticmethod
     def configure_styles(style, dark):
         color = POST_COLORS["dark" if dark else "light"]
-        style.configure("PostTitle.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 20, "bold"))
-        style.configure("PostLabel.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("PostTitle.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 20, "normal"))
+        style.configure("PostLabel.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 11, "normal"))
         style.configure("PostHint.TLabel", foreground=color["muted"])
         for name, fill, ink, hover in (
             ("Post.TButton", color["button"], color["text"], color["hover"]),
@@ -251,7 +251,7 @@ class PostManager(tk.Toplevel):
         style.map("Post.Treeview", background=[("selected", color["selected"])],
                   foreground=[("selected", color["selected_text"])])
         style.configure("Post.Treeview.Heading", background=color["header"], foreground=color["text"],
-                        relief="flat", font=("Microsoft YaHei UI", 10, "bold"))
+                        relief="flat", font=("Microsoft YaHei UI", 10, "normal"))
         style.map("Post.Treeview.Heading", background=[("active", color["header"])],
                   foreground=[("active", color["text"])])
 

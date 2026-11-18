@@ -145,9 +145,9 @@ class App:
         style.configure(".", font=("Microsoft YaHei UI", 10))
         for name in ("Treeview", "Accounts.Treeview"):
             style.configure(name, rowheight=40, font=("Microsoft YaHei UI", 10))
-            style.configure(name + ".Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "bold"))
-        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "bold"))
+            style.configure(name + ".Heading", font=("Microsoft YaHei UI", 10, "normal"), padding=(10, 12))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "normal"))
+        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "normal"))
         style.configure("Muted.TLabel", foreground="#c4cbd3" if dark else "#596674")
         PostManager.configure_styles(style, dark)
         for name, background, foreground, border, hover in (
@@ -205,25 +205,30 @@ class App:
         self.themed_widget(tb.Label(header, textvariable=self.account_summary), "Muted.TLabel").pack(side="right", padx=(0, 16))
         tb.Separator(frm).pack(fill="x")
 
-        avatar_frame = tb.Frame(frm)
-        avatar_frame.pack(fill="x", pady=(16, 12))
-        tb.Label(avatar_frame, text="头像目录").pack(side="left", padx=6)
+        image_paths = tb.Frame(frm)
+        image_paths.pack(fill="x", pady=(16, 12))
+        image_paths.columnconfigure(1, weight=1)
+        post_widget(ttk.Label, image_paths, "PostLabel.TLabel", text="头像目录").grid(
+            row=0, column=0, sticky="w", padx=(0, 10), pady=(0, 10))
         directory = self.configuration.get("avatar_directory", "")
         self.avatar_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
-        tb.Entry(avatar_frame, textvariable=self.avatar_directory).pack(side="left", fill="x", expand=True)
-        self.themed_widget(tb.Button(avatar_frame, text="选择目录", command=self.choose_avatar_directory, padding=(12, 8)), "Action.TButton").pack(side="left", padx=8)
-        tb.Button(avatar_frame, text="换头像", command=self.change_avatar, bootstyle="success", padding=(12, 8)).pack(side="left")
+        post_widget(ttk.Entry, image_paths, "Post.TEntry", textvariable=self.avatar_directory).grid(
+            row=0, column=1, sticky="nsew", pady=(0, 10))
+        post_widget(ttk.Button, image_paths, "Post.TButton", text="选择目录", command=self.choose_avatar_directory,
+                    padding=(12, 8)).grid(row=0, column=2, sticky="nsew", padx=8, pady=(0, 10))
+        tb.Button(image_paths, text="换头像", command=self.change_avatar, bootstyle="success",
+                  padding=(12, 8)).grid(row=0, column=3, sticky="nsew", pady=(0, 10))
 
-        cover_frame = tb.Frame(frm)
-        cover_frame.pack(fill="x", pady=(0, 12))
-        post_widget(ttk.Label, cover_frame, "PostLabel.TLabel", text="主页封面").pack(side="left", padx=6)
+        post_widget(ttk.Label, image_paths, "PostLabel.TLabel", text="主页封面").grid(
+            row=1, column=0, sticky="w", padx=(0, 10))
         directory = self.configuration.get("cover_directory", "")
         self.cover_directory = tk.StringVar(value=directory if isinstance(directory, str) else "")
-        post_widget(ttk.Entry, cover_frame, "Post.TEntry", textvariable=self.cover_directory).pack(side="left", fill="x", expand=True)
-        post_widget(ttk.Button, cover_frame, "Post.TButton", text="选择目录", command=self.choose_cover_directory,
-                    padding=(12, 8)).pack(side="left", padx=8)
-        post_widget(ttk.Button, cover_frame, "PostPrimary.TButton", text="更换封面",
-                    command=self.change_cover, padding=(12, 8)).pack(side="left")
+        post_widget(ttk.Entry, image_paths, "Post.TEntry", textvariable=self.cover_directory).grid(
+            row=1, column=1, sticky="nsew")
+        post_widget(ttk.Button, image_paths, "Post.TButton", text="选择目录", command=self.choose_cover_directory,
+                    padding=(12, 8)).grid(row=1, column=2, sticky="nsew", padx=8)
+        post_widget(ttk.Button, image_paths, "PostPrimary.TButton", text="更换封面",
+                    command=self.change_cover, padding=(12, 8)).grid(row=1, column=3, sticky="nsew")
 
         self.themed_widget(tb.Label(frm, text="账号操作"), "Section.TLabel").pack(anchor="w", pady=(0, 10))
         btnf = tb.Frame(frm)
@@ -268,7 +273,7 @@ class App:
         # Apply after ttkbootstrap has built its default table style.
         style = ttk.Style(self.root)
         style.configure("Accounts.Treeview", rowheight=40, font=("Microsoft YaHei UI", 10))
-        style.configure("Accounts.Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=(10, 12))
+        style.configure("Accounts.Treeview.Heading", font=("Microsoft YaHei UI", 10, "normal"), padding=(10, 12))
         self.list_view.configure(style="Accounts.Treeview")
 
     def remove_client(self, client_id):

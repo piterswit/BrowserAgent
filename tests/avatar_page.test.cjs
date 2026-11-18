@@ -3,7 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
-const source = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/change_avatar.js"), "utf8");
+const uiSource = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/fb_ui.js"), "utf8");
+const source = uiSource + "\n" + fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/change_avatar.js"), "utf8");
 
 function page({input = true, changed = true, error = "", success = "", menu = false, accepted = true, labels = {upload: "Upload photo", save: "Save", edit: "Edit profile picture", picture: "Alice's profile picture", choose: "Choose profile picture", see: "See profile picture"}} = {}) {
   let clock = 0, open = false, scrolled = false, menuOpen = false;
@@ -100,7 +101,15 @@ for (const labels of [
   {upload: "上传照片", save: "保存", edit: "编辑头像", picture: "Alice的头像", choose: "选择头像", see: "查看头像", success: "头像已更新", error: "上传失败"},
   {upload: "上傳相片", save: "儲存", edit: "編輯大頭貼", picture: "Alice的大頭貼", choose: "選擇大頭貼", see: "檢視大頭貼", success: "大頭貼已更新", error: "上傳失敗"},
   {upload: "上傳相片", save: "儲存", edit: "選擇大頭貼照", picture: "Alice的大頭貼照", choose: "選擇大頭貼照", see: "檢視大頭貼照", success: "大頭貼照已更新", error: "上傳失敗"},
-  {upload: "上傳照片", save: "儲存", edit: "編輯頭像", picture: "Alice的頭像", choose: "選擇頭像", see: "查看頭像", success: "頭像已儲存", error: "發生錯誤"}
+  {upload: "上傳照片", save: "儲存", edit: "編輯頭像", picture: "Alice的頭像", choose: "選擇頭像", see: "查看頭像", success: "頭像已儲存", error: "發生錯誤"},
+  {upload: "Subir foto", save: "Guardar", edit: "Editar foto del perfil", picture: "Foto del perfil de Ana", choose: "Seleccionar foto del perfil", see: "Ver foto del perfil", success: "Tu foto del perfil se ha actualizado", error: "No se pudo subir la foto"},
+  {upload: "Importer une photo", save: "Enregistrer", edit: "Modifier la photo de profil", picture: "Photo de profil de Alice", choose: "Choisir une photo de profil", see: "Voir la photo de profil", success: "Votre photo de profil a été mise à jour", error: "Une erreur est survenue"},
+  {upload: "Foto hochladen", save: "Speichern", edit: "Profilbild bearbeiten", picture: "Profilbild von Anna", choose: "Profilbild auswählen", see: "Profilbild ansehen", success: "Dein Profilbild wurde aktualisiert", error: "Hochladen fehlgeschlagen"},
+  {upload: "Carregar foto", save: "Salvar", edit: "Editar foto do perfil", picture: "Foto do perfil de Ana", choose: "Selecionar foto do perfil", see: "Ver foto do perfil", success: "Sua foto do perfil foi atualizada", error: "Falha ao enviar a foto"},
+  {upload: "写真をアップロード", save: "保存", edit: "プロフィール写真を編集", picture: "Aliceのプロフィール写真", choose: "プロフィール写真を選択", see: "プロフィール写真を見る", success: "プロフィール写真が更新されました", error: "アップロードに失敗しました"},
+  {upload: "사진 업로드", save: "저장", edit: "프로필 사진 수정", picture: "Alice 프로필 사진", choose: "프로필 사진 선택", see: "프로필 사진 보기", success: "프로필 사진이 업데이트되었습니다", error: "업로드 오류"},
+  {upload: "تحميل صورة", save: "حفظ", edit: "تعديل صورة الملف الشخصي", picture: "صورة الملف الشخصي", choose: "اختيار صورة الملف الشخصي", see: "عرض صورة الملف الشخصي", success: "تم تحديث صورة الملف الشخصي", error: "فشل تحميل الصورة"},
+  {upload: "Tải ảnh lên", save: "Lưu", edit: "Chỉnh sửa ảnh đại diện", picture: "Ảnh đại diện của An", choose: "Chọn ảnh đại diện", see: "Xem ảnh đại diện", success: "Ảnh đại diện đã được cập nhật", error: "Lỗi tải ảnh"},
 ]) {
   for (const menu of [false, true]) test(`${labels.edit}: ${menu ? "menu" : "direct"} upload and save`, async () => {
     const p = page({labels, menu, changed: false, success: labels.success});

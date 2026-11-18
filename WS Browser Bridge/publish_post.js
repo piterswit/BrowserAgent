@@ -1,4 +1,6 @@
 (() => {
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
   const request = window.__fbPostRequest;
   if (!request?.operationId || typeof request.text !== "string") return;
   if (window.__fbPostController?.operationId === request.operationId) return;
@@ -16,6 +18,9 @@
     publish: /^(post|publish|发布|發佈|發表)$/i,
     removeImage: /^(remove (photo|image)|移除照片|移除相片|移除图片|移除圖片|移除圖像)$/i,
   };
+  for (const [key, action] of Object.entries({composer: "composer", photo: "photoVideo", publish: "publish", removeImage: "photoRemove"})) {
+    words[key] = ui.pattern(action, words[key]);
+  }
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const complete = (success, confirmed, submitted, detail) => {
     if (finished) return;
@@ -29,7 +34,7 @@
       if (result) return result;
       await sleep(150);
     }
-    throw new Error(stopped ? "发帖任务已取消" : "页面加载超时或当前 Facebook 布局不支持");
+    throw new Error(stopped ? "发帖任务已取消" : ui.describe("发布控件"));
   };
   const click = node => {
     if (!visible(node)) throw new Error("未找到可操作的发布控件");
@@ -37,10 +42,9 @@
     node.click();
   };
   const controls = '[role="button"], button, label';
-  const label = node => (node.getAttribute("aria-label") || "").trim();
-  const matches = (node, matcher) => matcher.test(label(node)) || matcher.test(text(node));
-  const clickable = (scope, matcher) => [...scope.querySelectorAll(controls)]
-    .find(node => visible(node) && matches(node, matcher));
+  const matches = (node, matcher) => ui.values(node).some(value => matcher.test(value));
+  const clickable = (scope, matcher) => ui.unique(
+    [...scope.querySelectorAll(controls)].filter(visible), matcher);
   const getEditor = dialog => [...dialog.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')].find(visible);
   const getValue = editor => editor?.isContentEditable ? editor.innerText : editor?.value;
   const normalize = value => value?.replace(/\s+/g, " ").trim();
@@ -121,7 +125,7 @@
       submitted = true;
       click(publish);
       const confirmed = await waitFor(() => [...document.querySelectorAll('[role="alert"], [role="status"]')]
-        .some(node => visible(node) && !initial.has(text(node)) && /post.*(published|shared)|(?:贴文|帖子|貼文).*(?:已发布|已發佈|已發表|已分享)|(?:已发布|已發佈|已發表|已分享).*(?:贴文|帖子|貼文)/i.test(text(node))), 15000)
+        .some(node => visible(node) && !initial.has(text(node)) && ui.success("post", text(node))), 15000)
         .then(() => true, () => false);
       complete(true, confirmed, true, confirmed ? "贴文已发布" : "已点击发布，请核对贴文");
     } catch (error) {

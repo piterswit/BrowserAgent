@@ -6,7 +6,7 @@ const {spawn} = require("node:child_process");
 const {randomUUID} = require("node:crypto");
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const project = path.resolve(__dirname, "..");
-const source = fs.readFileSync(path.join(project, "WS Browser Bridge/change_cover.js"), "utf8");
+const source = fs.readFileSync(path.join(project, "WS Browser Bridge/fb_ui.js"), "utf8") + "\n" + fs.readFileSync(path.join(project, "WS Browser Bridge/change_cover.js"), "utf8");
 
 async function connect(url) {
   const socket = new WebSocket(url);
@@ -38,17 +38,20 @@ async function connect(url) {
   };
 }
 
-function setupFixture(labels, chooser) {
+function setupFixture(labels, chooser, options) {
+  document.documentElement.lang = labels.language || "en";
+  document.documentElement.dir = labels.rtl ? "rtl" : "ltr";
   document.body.innerHTML = '<main><h1>Demo</h1><section><img id="cover" alt="cover photo" width="700" height="220"><button id="edit"></button></section></main>' +
     '<div role="dialog" aria-label="Settings"><button id="wrong">Save</button></div>';
-  const picture = color => "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="700" height="220"><rect width="700" height="220" fill="' + color + '"/></svg>');
+  const picture = color => options.samePath ? "https://scontent.test.fbcdn.net/cover.jpg?variant=" + color :
+    "data:image/svg+xml," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="700" height="220"><rect width="700" height="220" fill="' + color + '"/></svg>');
   document.querySelector("#cover").src = picture("blue");
   window.saved = false;
   window.messages = [];
   window.chrome = {runtime: {sendMessage: async message => {
     window.messages.push(message.cmd);
-    return {accepted: window.authorized !== false};
+    return {accepted: message.cmd !== "fb_cover_submitting" || window.authorized !== false};
   }}};
   document.querySelector("#wrong").onclick = () => { throw new Error("unrelated Save button"); };
   const edit = document.querySelector("#edit");
@@ -68,10 +71,46 @@ function setupFixture(labels, chooser) {
       menu.remove();
       const editor = document.createElement("section");
       editor.innerHTML = '<img alt="cover photo preview" width="700" height="220"><button>Cancel</button><button id="save"></button>';
-      editor.querySelector("img").src = picture("green");
+      if (options.background) {
+        const preview = document.createElement("div");
+        preview.setAttribute("role", "img");
+        preview.setAttribute("aria-label", "cover photo preview");
+        preview.style.cssText = 'width:700px;height:220px;background-image:url("' + picture("green") + '")';
+        editor.querySelector("img").replaceWith(preview);
+      } else {
+        const preview = editor.querySelector("img");
+        preview.src = picture(options.noPreview ? "blue" : "green");
+        if (options.portrait) {
+          preview.width = 220;
+          preview.height = 440;
+        }
+        if (options.croppedPortrait) {
+          preview.removeAttribute("alt");
+          preview.width = 700;
+          preview.height = 700;
+          const crop = document.createElement("div");
+          crop.style.cssText = "width:700px;height:220px;overflow:hidden";
+          preview.replaceWith(crop);
+          crop.append(preview);
+        }
+      }
+      if (options.unrelatedFeed) {
+        const article = document.createElement("article");
+        article.setAttribute("role", "article");
+        article.innerHTML = '<img alt="cover photo" width="700" height="220">';
+        article.querySelector("img").src = picture("red");
+        document.querySelector("main").append(article);
+      }
       const save = editor.querySelector("#save");
       save.textContent = labels.save;
+      if (options.ariaLabel) save.setAttribute("aria-label", "Save your cover photo");
       document.querySelector("main").append(editor);
+      const toolbar = document.createElement("div");
+      if (options.fixedToolbar) {
+        toolbar.style.cssText = "position:fixed;bottom:0;left:0;right:0;background:white";
+        toolbar.append(...editor.querySelectorAll("button"));
+        document.body.append(toolbar);
+      }
       save.onclick = () => {
         save.disabled = true;
         // A disabled Save button must not become a confirmed save.
@@ -79,6 +118,7 @@ function setupFixture(labels, chooser) {
           document.querySelector("#cover").src = picture("green");
           window.saved = true;
           editor.remove();
+          toolbar.remove();
         }, 400);
       };
     };
@@ -90,16 +130,20 @@ function setupFixture(labels, chooser) {
   };
 }
 
-async function scenario(port, labels, chooser, denied = false) {
+async function scenario(port, labels, chooser, denied = false, options = {}) {
   const response = await fetch("http://127.0.0.1:" + port + "/json/new?about:blank", {method: "PUT"});
   const target = await response.json();
   const cdp = await connect(target.webSocketDebuggerUrl);
   try {
     await cdp.call("Page.enable");
     cdp.events.set("Fetch.requestPaused", params => {
+      const isImage = params.request.resourceType === "Image" || params.resourceType === "Image" ||
+        params.request.url.startsWith("https://scontent.test.fbcdn.net/");
+      const body = isImage ? '<svg xmlns="http://www.w3.org/2000/svg" width="700" height="220"><rect width="700" height="220" fill="green"/></svg>' :
+        "<!doctype html><body></body>";
       cdp.call("Fetch.fulfillRequest", {requestId: params.requestId, responseCode: 200,
-        responseHeaders: [{name: "Content-Type", value: "text/html; charset=utf-8"}],
-        body: Buffer.from("<!doctype html><body></body>").toString("base64")}).catch(console.error);
+        responseHeaders: [{name: "Content-Type", value: isImage ? "image/svg+xml" : "text/html; charset=utf-8"}],
+        body: Buffer.from(body).toString("base64")}).catch(console.error);
     });
     await cdp.call("Fetch.enable", {patterns: [{urlPattern: "*"}]});
     await cdp.call("Page.navigate", {url: "https://www.facebook.com/me"});
@@ -112,9 +156,9 @@ async function scenario(port, labels, chooser, denied = false) {
       if (await evaluate('location.hostname === "www.facebook.com" && document.readyState === "complete"')) break;
       await pause(50);
     }
-    await evaluate("(" + setupFixture + ")(" + JSON.stringify(labels) + "," + chooser + ")");
+    await evaluate("(" + setupFixture + ")(" + JSON.stringify(labels) + "," + chooser + "," + JSON.stringify(options) + ")");
     await evaluate(source);
-    await evaluate('window.__fbCover.operationId = "fixture"; window.__fbCover.expires = Date.now() + 20000');
+    await evaluate('window.__fbCover.operationId = "fixture"; window.__fbCover.expires = Date.now() + 4000');
     assert.equal(await evaluate("window.__fbCover.prepare()"), chooser ? "chooser" : "input");
     const image = path.join(project, "WS Browser Bridge/icon/avatar-placeholder.png");
     if (chooser) {
@@ -137,19 +181,29 @@ async function scenario(port, labels, chooser, denied = false) {
       await evaluate("window.authorized = false");
       await assert.rejects(evaluate("window.__fbCover.save()"));
       assert.equal(await evaluate("window.saved"), false);
+      assert.ok((await evaluate("window.messages")).includes("fb_cover_submitting"));
+    } else if (options.noPreview) {
+      await assert.rejects(evaluate("window.__fbCover.save()"), /任务已过期/);
+      assert.equal(await evaluate("window.saved"), false);
+      assert.ok(!(await evaluate("window.messages")).includes("fb_cover_submitting"));
     } else {
+      if (options.uploadDelay) {
+        await evaluate('document.querySelector("#save").disabled = true; setTimeout(() => document.querySelector("#save").disabled = false, 500)');
+      }
       assert.equal((await evaluate("window.__fbCover.save()")).confirmed, true);
       assert.equal(await evaluate("window.saved"), true);
       assert.ok((await evaluate("window.messages")).includes("fb_cover_submitting"));
     }
-    console.log(labels.edit + " / " + (chooser ? "chooser" : "input") + (denied ? " / denied save" : " / confirmed save") + ": passed");
+    const result = denied ? "denied save" : options.noPreview ? "no preview, no save" : "confirmed save";
+    console.log(labels.edit + " / " + (chooser ? "chooser" : "input") + " / " + result +
+      " " + JSON.stringify(options) + ": passed");
   } finally {
     cdp.close();
     await fetch("http://127.0.0.1:" + port + "/json/close/" + target.id);
   }
 }
 
-async function main() {
+async function withBrowser(check) {
   const chrome = [
     process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google/Chrome/Application/chrome.exe"),
     process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Microsoft/Edge/Application/msedge.exe"),
@@ -166,6 +220,18 @@ async function main() {
     const activePort = path.join(profile, "DevToolsActivePort");
     for (let attempt = 0; !fs.existsSync(activePort) && attempt < 150; attempt++) await pause(100);
     const port = Number(fs.readFileSync(activePort, "utf8").split(/\r?\n/)[0]);
+    await check(port);
+  } finally {
+    const closed = new Promise(resolve => browser.once("exit", resolve));
+    browser.kill();
+    await Promise.race([closed, pause(5000)]);
+    assert.ok(profile.startsWith(cache + path.sep));
+    fs.rmSync(profile, {recursive: true, force: true, maxRetries: 10, retryDelay: 150});
+  }
+}
+
+async function main() {
+  await withBrowser(async port => {
     const languages = [
       {edit: "Edit cover photo", upload: "Upload photo", save: "Save changes"},
       {edit: "编辑封面照片", upload: "上传照片", save: "保存更改"},
@@ -176,13 +242,18 @@ async function main() {
       await scenario(port, labels, true);
     }
     await scenario(port, languages[0], false, true);
-  } finally {
-    const closed = new Promise(resolve => browser.once("exit", resolve));
-    browser.kill();
-    await Promise.race([closed, pause(5000)]);
-    assert.ok(profile.startsWith(cache + path.sep));
-    fs.rmSync(profile, {recursive: true, force: true, maxRetries: 10, retryDelay: 150});
-  }
+    await scenario(port, languages[1], false, false, {fixedToolbar: true});
+    await scenario(port, languages[1], false, false, {fixedToolbar: true, background: true});
+    await scenario(port, languages[0], false, false, {portrait: true});
+    await scenario(port, languages[0], false, false, {samePath: true});
+    await scenario(port, languages[0], false, false, {ariaLabel: true});
+    await scenario(port, languages[0], false, false, {fixedToolbar: true, uploadDelay: true});
+    await scenario(port, languages[0], false, false, {croppedPortrait: true});
+    await scenario(port, languages[0], false, false, {fixedToolbar: true, noPreview: true, unrelatedFeed: true});
+  });
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports = {connect, scenario, withBrowser};
+if (require.main === module) {
+  main().catch(error => { console.error(error); process.exitCode = 1; });
+}

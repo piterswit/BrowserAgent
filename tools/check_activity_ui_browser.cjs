@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require("playwright");
 const folder = path.join(__dirname, "../WS Browser Bridge");
+const uiSource = fs.readFileSync(path.join(folder, "fb_ui.js"), "utf8");
 
 async function checkSecurityFalsePositives(browser) {
   const page = await browser.newPage({viewport: {width: 1000, height: 700}});
@@ -23,7 +24,7 @@ async function checkSecurityFalsePositives(browser) {
       document.querySelector("#close").onclick = () => document.querySelector('[role="dialog"]').hidden = true;
     });
     for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-      await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+      await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
     }
     const result = await page.evaluate(async () => {
       const runtime = window.__fbActivityRuntime, ctrl = runtime.create("home");
@@ -80,7 +81,7 @@ async function checkTaskBoundaries(browser) {
         };
       }, scenario);
       for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-        await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+        await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
       }
       const result = await page.evaluate(async scenario => {
         const ctrl = window.__fbActivityRuntime.create("home");
@@ -117,7 +118,7 @@ async function checkRequestCancellation(browser) {
       document.querySelector("#sent").onclick = () => { window.entryClicks++; document.querySelector('[role="dialog"]').hidden = false; };
       document.querySelector("#cancel").onclick = () => window.cancelClicks++;
     });
-    await page.addScriptTag({content: fs.readFileSync(path.join(folder, "cancel_friend_requests.js"), "utf8")});
+    await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, "cancel_friend_requests.js"), "utf8")});
     await page.waitForFunction(() => window.entryClicks === 1);
     await page.evaluate(() => window.__fbCancelRequestsCtrl.stop());
     await page.waitForTimeout(300);
@@ -141,7 +142,7 @@ async function checkPopupRecovery(browser) {
       Object.defineProperty(document, "hidden", {configurable: true, get: () => window.fixtureHidden});
       document.hasFocus = () => false;
     });
-    await page.addScriptTag({content: fs.readFileSync(path.join(folder, "activity_runtime.js"), "utf8")});
+    await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, "activity_runtime.js"), "utf8")});
     await page.evaluate(() => {
       const ctrl = window.__fbActivityRuntime.create("home");
       if (ctrl.canAct() || ctrl.state !== "等待中" || !ctrl.run) throw Error("Hidden page did not wait");
@@ -201,7 +202,7 @@ async function checkIconControls(browser) {
       get("publish").onclick = () => { window.actions.push("publish"); get("storyComposer").hidden = true; get("notice").textContent = "Your story was shared"; };
     });
     for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-      await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+      await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
     }
     const result = await page.evaluate(async () => {
       const ctrl = window.__fbActivityRuntime.create("home");
@@ -257,7 +258,7 @@ async function checkPlainDivComments(browser) {
         get("send").onclick = () => { window.events.push("send"); get("editor").textContent = ""; };
       });
       for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-        await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+        await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
       }
       const result = await page.evaluate(async () => {
         const ctrl = window.__fbActivityRuntime.create("home");
@@ -310,7 +311,7 @@ async function checkPlainDivSharing(browser) {
           };
         }, labels.success);
         for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-          await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+          await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
         }
         const result = await page.evaluate(async () => {
           const ctrl = window.__fbActivityRuntime.create("home");
@@ -371,7 +372,7 @@ async function checkCommentFailureCleanup(browser) {
           }
         }, scenario);
         for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-          await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+          await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
         }
         const result = await page.evaluate(async () => {
           const ctrl = window.__fbActivityRuntime.create("home");
@@ -426,7 +427,7 @@ async function checkHomeCommentRoutes(browser) {
           get("like").onclick = () => get("like").setAttribute("aria-pressed", "true");
         });
         for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-          await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+          await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
         }
         const result = await page.evaluate(async () => {
           const ctrl = window.__fbActivityRuntime.create("home"), deadline = ctrl.deadline;
@@ -502,7 +503,7 @@ async function main() {
           };
         });
         for (const file of ["activity_runtime.js", "activity_interactions.js"]) {
-          await page.addScriptTag({content: fs.readFileSync(path.join(folder, file), "utf8")});
+          await page.addScriptTag({content: uiSource + "\n" + fs.readFileSync(path.join(folder, file), "utf8")});
         }
         await page.evaluate(async () => {
           const ctrl = window.__fbActivityRuntime.create("home");

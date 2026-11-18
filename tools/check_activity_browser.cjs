@@ -4,7 +4,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require("playwright");
 const folder = path.join(__dirname, "../WS Browser Bridge");
-const source = name => fs.readFileSync(path.join(folder, name), "utf8");
+const uiSource = fs.readFileSync(path.join(folder, "fb_ui.js"), "utf8");
+const source = name => (name === "bg.js" ? "" : uiSource + "\n") + fs.readFileSync(path.join(folder, name), "utf8");
 const html = nested => `<!doctype html><style>
   body {margin:0; ${nested ? "height:100vh;overflow:hidden" : ""}}
   main {${nested ? "height:100vh;overflow-y:auto" : ""}}

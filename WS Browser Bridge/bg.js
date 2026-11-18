@@ -381,7 +381,7 @@ async function runAvatarChange(filePath, expectedProfile) {
     await activateTab(tab.id);
     await chrome.debugger.attach(target, "1.3");
     attached = true;
-    await chrome.scripting.executeScript({target, files: ["change_avatar.js"]});
+    await chrome.scripting.executeScript({target, files: ["fb_ui.js", "change_avatar.js"]});
     await chrome.scripting.executeScript({target, func: id => { window.__fbAvatar.operationId = id; }, args: [avatarOperation.id]});
     const mode = await avatarStep(tab.id, "prepare");
     await checkAccount();
@@ -517,7 +517,7 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
     }
     await chrome.scripting.executeScript({target, func: request => { window.__fbPostRequest = request; },
       args: [{operationId: operation.id, text: text.trim(), hasImage: !!imagePath}]});
-    await chrome.scripting.executeScript({target, files: ["publish_post.js"]});
+    await chrome.scripting.executeScript({target, files: ["fb_ui.js", "publish_post.js"]});
     const result = await completed;
     outcome = [result.success, result.confirmed, result.detail];
   } catch (error) {
@@ -614,7 +614,7 @@ async function runCoverChange(msg) {
     await activateTab(tab.id);
     await chrome.debugger.attach(target, "1.3");
     attached = true;
-    await chrome.scripting.executeScript({target, files: ["change_cover.js"]});
+    await chrome.scripting.executeScript({target, files: ["fb_ui.js", "change_cover.js"]});
     await chrome.scripting.executeScript({target, func: (id, expires) => {
       window.__fbCover.operationId = id;
       window.__fbCover.expires = expires;
@@ -875,7 +875,7 @@ async function injectActivity(tabId, mode, runId, epoch) {
   if (activityEpoch !== epoch) return;
   await chrome.scripting.executeScript({
     target: {tabId},
-    files: ["activity_runtime.js", "activity_interactions.js", mode === "reels" ? "auto_reels.js" : "tools.js"]
+    files: ["fb_ui.js", "activity_runtime.js", "activity_interactions.js", mode === "reels" ? "auto_reels.js" : "tools.js"]
   });
   if (activityEpoch !== epoch) return;
   const [started] = await chrome.scripting.executeScript({target: {tabId},
@@ -906,7 +906,7 @@ async function openAndInject(url, file) {
   await navigateActivity(tab.id, url, epoch);
   if (activityEpoch !== epoch) return;
   safeSend({type: "status", status: "cancel_friend_requests"});
-  try { await chrome.scripting.executeScript({target: {tabId: tab.id}, files: [file]}); }
+  try { await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["fb_ui.js", file]}); }
   catch (error) { if (activityEpoch === epoch) throw error; }
   if (activityEpoch === epoch) safeSend({type: "status", status: "stop"});
 }

@@ -4,7 +4,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
 const folder = path.join(__dirname, "../WS Browser Bridge");
-const source = name => fs.readFileSync(path.join(folder, name), "utf8");
+const uiSource = fs.readFileSync(path.join(folder, "fb_ui.js"), "utf8");
+const source = name => (name === "bg.js" ? "" : uiSource + "\n") + fs.readFileSync(path.join(folder, name), "utf8");
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
 function timers() {
@@ -123,7 +124,7 @@ function popupFixture(p, {label = "Close", text = "Optional notice", fields = []
 }
 
 for (const mode of ["home", "group", "custom", "reels"]) {
-  for (const label of ["Close", "关闭", "關閉", "Not now", "取消"]) {
+  for (const label of ["Close", "关闭", "關閉", "Not now", "取消", "Fermer", "Cerrar", "Schließen", "閉じる", "닫기", "إغلاق"]) {
     test(`${mode}: ${label} dismisses a generic popup and continues browsing`, async () => {
       const p = page(mode), fixture = popupFixture(p, {label});
       p.inject(); await p.clock.advance(10000);
@@ -160,7 +161,10 @@ test("Escape can dismiss an unlabeled generic popup without selecting its action
   p.window.__fbActivityRuntime.stop();
 });
 
-for (const config of [{text: "Confirm your identity"}, {text: "登录验证"}, {fields: [{type: "password", value: ""}]},
+for (const config of [{text: "Confirm your identity"}, {text: "登录验证"},
+  {text: "Confirmez votre identité"}, {text: "Проверка безопасности"},
+  {text: "تأكيد هويتك"}, {text: "本人確認"}, {text: "Xác nhận danh tính"},
+  {fields: [{type: "password", value: ""}]}, {fields: [{type: "text", autocomplete: "one-time-code", value: ""}]},
   {fields: [{value: "My unfinished comment"}]}, {fields: [{type: "file", files: [{}]}]}]) {
   test(`protected popup ${JSON.stringify(config)} is not dismissed`, () => {
     const p = page(), fixture = popupFixture(p, config); p.inject();
@@ -386,7 +390,9 @@ test("stop while waiting to click a Reels arrow prevents the click", async () =>
   assert.equal(clicks, 0); assert.equal(p.clock.jobs.size, 0);
 });
 
-for (const [next, previous] of [["Next reel", "Previous reel"], ["下一条视频", "上一条视频"], ["下一則短影片", "上一則短影片"], ["下一個影片", "上一個影片"]]) {
+for (const [next, previous] of [["Next reel", "Previous reel"], ["下一条视频", "上一条视频"], ["下一則短影片", "上一則短影片"], ["下一個影片", "上一個影片"],
+  ["Siguiente vídeo", "Vídeo anterior"], ["Suivant", "Précédent"], ["Nächstes Video", "Vorheriges Video"],
+  ["次の動画", "前の動画"], ["다음 동영상", "이전 동영상"], ["الفيديو التالي", "الفيديو السابق"]]) {
   test(`Reels localized arrows: ${next} / ${previous}`, async () => {
     const clicks = [];
     const p = reelLayout({random: 0, buttons: [reelButton(previous, () => clicks.push("previous")), reelButton(next, () => clicks.push("next"))]});

@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require("playwright");
-const source = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/change_avatar.js"), "utf8");
+const uiSource = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/fb_ui.js"), "utf8");
+const source = uiSource + "\n" + fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/change_avatar.js"), "utf8");
 
 async function main() {
   const browser = await chromium.launch({headless: true, channel: "chrome"});

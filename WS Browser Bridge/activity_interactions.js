@@ -1,4 +1,6 @@
 (() => {
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
   const labels = {
     like: /^(Like|赞|讚|点赞|點讚|按赞|按讚)$/i,
     comment: /^(Comment|评论|評論|留言|回覆)$/i,
@@ -7,6 +9,9 @@
     publish: /^(Share( now)?|Post|分享|立即分享|发布|發佈|發表)$/i,
     join: /^(Join( group)?|加入(小组|小組|社團)?)$/i
   };
+  for (const key of Object.keys(labels)) {
+    labels[key] = ui.pattern(key === "publish" ? ["publish", "share"] : key, labels[key]);
+  }
   const comments = ["Thanks for sharing!", "Interesting perspective.", "Nice post!", "Great photos!"];
   const random = (min, max) => min + Math.random() * (max - min);
   const text = node => (node.getAttribute("aria-label") || node.innerText || "").replace(/\s+/g, " ").trim();
@@ -19,9 +24,9 @@
     return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight;
   };
   const buttons = scope => [...scope.querySelectorAll('[role="button"], button')].filter(visible);
-  const closeChatWords = /^(Close chat|Close conversation|Close chat window|Close chat with .+|关闭聊天|关闭聊天窗口|关闭对话|关闭与.+的聊天|關閉聊天|關閉聊天室|關閉聊天視窗|關閉對話|關閉與.+的聊天室)$/i;
+  const closeChatWords = ui.pattern("closeChat", /^(Close chat|Close conversation|Close chat window|Close chat with .+|关闭聊天|关闭聊天窗口|关闭对话|关闭与.+的聊天|關閉聊天|關閉聊天室|關閉聊天視窗|關閉對話|關閉與.+的聊天室)$/i);
   const chatScope = scope => buttons(scope).some(node => closeChatWords.test(text(node)));
-  const likedWords = /^(Liked|Unlike|Remove like|已赞|已讚|已点赞|已點讚|取消赞|取消讚|取消点赞|取消點讚|收回赞|收回讚)$/i;
+  const likedWords = ui.pattern("liked", /^(Liked|Unlike|Remove like|已赞|已讚|已点赞|已點讚|取消赞|取消讚|取消点赞|取消點讚|收回赞|收回讚)$/i);
   const liked = node => ["aria-pressed", "aria-checked"].some(name => node.getAttribute(name) === "true") ||
     matches(node, likedWords);
   const hasActionMarker = (node, kind) => ["like", "comment", "share"].includes(kind) &&
@@ -62,7 +67,7 @@
     if (semantic) return semantic;
     const options = [...scope.querySelectorAll("span, div")].filter(node => {
       if (!enabled(node) || !matches(node, labels.story) ||
-          !/^(Share to |分享到|分享至)/i.test(text(node))) return false;
+          !(ui.matches(node, "story") || /^(Share to |分享到|分享至)/i.test(text(node)))) return false;
       if (node.closest('h1, h2, h3, h4, h5, h6, [role="heading"], a[href], input, textarea, [contenteditable="true"]')) return false;
       return ![...node.children].some(child => matches(child, labels.story));
     });
@@ -127,7 +132,7 @@
     let pendingNotification = null;
     const draft = node => (node.value || node.innerText || "").trim();
     const editors = scope => [...scope.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')];
-    const closeWords = /^(Close(?: (?:dialog|window|popup|post|comments?))?|关闭(?:窗口|弹窗|对话框|帖子|评论)?|關閉(?:視窗|彈窗|對話方塊|貼文|帖子|評論|留言)?)$/i;
+    const closeWords = ui.pattern("close", /^(Close(?: (?:dialog|window|popup|post|comments?))?|关闭(?:窗口|弹窗|对话框|帖子|评论)?|關閉(?:視窗|彈窗|對話方塊|貼文|帖子|評論|留言)?)$/i);
     let nextNotifications = Date.now() + random(45000, 90000), notificationVisits = 0;
     function cleanupDrafts() {
       for (const [editor, {scope, value, lastInput}] of pendingDrafts) {
@@ -209,7 +214,7 @@
     async function maybeNotifications() {
       if (ctrl.mode !== "home" || notificationVisits >= 2 || Date.now() < nextNotifications || !ctrl.canAct()) return false;
       nextNotifications = Date.now() + random(90000, 150000);
-      const notificationWords = /^(Notifications?|通知|通知消息|通知訊息)(?:[,，:：\s]+\d+.*)?$/i;
+      const notificationWords = ui.pattern("notifications", /^(Notifications?|通知|通知消息|通知訊息)(?:[,，:：\s]+\d+.*)?$/i);
       const trigger = [...document.querySelectorAll('[role="banner"] [role="button"], [role="banner"] button, header [role="button"], header button')]
         .filter(visible).find(node => notificationWords.test(text(node)));
       if (!trigger || trigger.getAttribute("aria-expanded") === "true") return false;
@@ -356,9 +361,9 @@
           if (key) return key === item.key;
           const names = [node.getAttribute("aria-label"),
             ...[...node.querySelectorAll('[role="heading"], h1, h2')].map(text)];
-          return names.some(value => /comments?|评论|評論|留言/i.test(value || "")) ||
-            editors(node).some(editor => /comments?|评论|評論|留言/i.test(editor.getAttribute("aria-label") || "")) ||
-            !!findButton(node, /^(Post comment|Send comment|Submit comment|发表评论|发布评论|發佈留言|發表留言|送出留言)$/i);
+          return names.some(value => ui.contains("commentSubject", value || "") || /comments?|评论|評論|留言/i.test(value || "")) ||
+            editors(node).some(editor => ui.contains("commentSubject", editor.getAttribute("aria-label") || "") || /comments?|评论|評論|留言/i.test(editor.getAttribute("aria-label") || "")) ||
+            !!findButton(node, ui.pattern("commentSubmit", /^(Post comment|Send comment|Submit comment|发表评论|发布评论|發佈留言|發表留言|送出留言)$/i));
         };
         editor = await waitFor(() => {
           scope = overlays().find(node => !previous.has(node) && commentOverlay(node)) || item.scope;
@@ -382,7 +387,7 @@
         if (draft(editor) !== value || identity(item.scope, "comment") !== item.key) {
           ctrl.noteInteractionIssue("评论内容或目标帖子发生变化，未提交", "comment"); return false;
         }
-        const sendWords = /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i;
+        const sendWords = ui.pattern(["commentSend","publish"], /^(Post comment|Send comment|Submit comment|Send|Post|发布评论|发表评论|发送评论|发布|发送|發佈留言|發表留言|送出留言|發佈|發表|傳送|送出)$/i);
         const locateSend = () => {
           for (let parent = editor.parentElement, depth = 0; parent && scope.contains(parent) && depth < 8; depth++, parent = parent.parentElement) {
             const localEditors = editors(parent).filter(visible);
@@ -448,7 +453,7 @@
       if (!option) { ctrl.noteInteractionIssue("分享菜单没有可见的快拍入口", "share"); return; }
       const previousMessages = new Map([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => [node, text(node)]));
       const successNotice = () => [...document.querySelectorAll('[role="alert"], [role="status"]')].filter(visible)
-        .some(node => previousMessages.get(node) !== text(node) && /story.*(shared|added|published)|shared.*story|(?:快拍|限时动态|限時動態).*(已分享|已发布|已發佈|已發表|成功)|(?:已分享|已发布|已發佈|已發表).*(?:快拍|限时动态|限時動態)/i.test(text(node)));
+        .some(node => previousMessages.get(node) !== text(node) && ui.success("story", text(node)));
       const beforeStory = new Set(overlays());
       const beforeText = texts(menu).join("\n");
       // Selecting this entry may publish immediately; never submit it twice to find out.

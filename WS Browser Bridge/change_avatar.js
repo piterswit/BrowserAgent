@@ -1,10 +1,12 @@
 (() => {
+  const ui = window.__fbUI;
+  if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   const visible = el => el && el.getClientRects().length && !el.closest('[aria-hidden="true"]') &&
     getComputedStyle(el).visibility !== "hidden" && getComputedStyle(el).opacity !== "0";
   const label = el => (el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim();
   const buttons = root => [...root.querySelectorAll('button, [role="button"], a[role="link"], a[href]')].filter(visible);
-  const matches = (el, words) => words.some(word => label(el).toLowerCase() === word.toLowerCase());
+  const matches = (el, words) => ui.values(el).some(value => words.test(value));
   const dialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(visible);
   const waitFor = async (find, description, timeout = 30000) => {
     const deadline = Date.now() + timeout;
@@ -13,12 +15,11 @@
       if (result) return result;
       await delay(300);
     }
-    throw new Error(`未找到${description}，请检查 Facebook 页面语言或布局`);
+    throw new Error(`未找到${description}；${ui.describe(description)}`);
   };
-  const editWords = ["Edit profile picture", "Update profile picture", "编辑头像", "編輯大頭貼", "編輯頭像", "更新头像", "更新大頭貼", "更新頭像", "更换头像", "更換大頭貼", "更換頭像"];
-  const chooseWords = ["Choose profile picture", "Select profile picture", "选择头像", "選擇大頭貼", "選擇大頭貼照", "選擇頭像", "选择个人头像", "選擇個人頭像"];
-  const uploadWords = ["Upload photo", "Upload picture", "上传照片", "上传图片", "上傳相片", "上傳照片", "上傳圖片"];
-  const saveWords = ["Save", "保存", "储存", "儲存"];
+  const chooseWords = ui.pattern("avatarChoose", ["Choose profile picture", "Select profile picture", "选择头像", "選擇大頭貼", "選擇大頭貼照", "選擇頭像", "选择个人头像", "選擇個人頭像"]);
+  const uploadWords = ui.pattern("photoUpload", ["Upload photo", "Upload picture", "上传照片", "上传图片", "上傳相片", "上傳照片", "上傳圖片"]);
+  const saveWords = ui.pattern("save", ["Save", "保存", "储存", "儲存"]);
   let originalPictures = [];
   let pictureContainer;
   const activate = async () => {
@@ -27,7 +28,8 @@
     if (!response?.accepted) throw new Error("无法激活头像任务标签页");
   };
   const pictureSources = root => [...root.querySelectorAll('img, svg image')]
-    .filter(el => !el.closest('[role="dialog"], [role="article"]') && !/cover|封面/i.test(el.getAttribute("alt") || ""))
+    .filter(el => !el.closest('[role="dialog"], [role="article"]') &&
+      !ui.contains("coverSubject", el.getAttribute("alt") || "") && !/cover|封面/i.test(el.getAttribute("alt") || ""))
     .filter(el => { const rect = el.getBoundingClientRect(); return rect.width >= 100 && rect.height >= 100 && rect.width / rect.height > 0.8 && rect.width / rect.height < 1.25; })
     .map(el => el.currentSrc || el.src || el.getAttribute("href") || el.getAttribute("xlink:href"))
     .filter(Boolean)
@@ -38,11 +40,12 @@
     async prepare() {
       if (window.__hsCtrl) window.__hsCtrl.stop();
       if (window.__reelCtrl) window.__reelCtrl.run = false;
-      const edit = await waitFor(() => buttons(document).find(el => matches(el, [...editWords, ...chooseWords])) ||
+      const edit = await waitFor(() => ui.unique(buttons(document), ["avatarEdit", "avatarChoose"]) ||
         buttons(document).find(el => {
           if (el.closest('[role="banner"], [role="navigation"], [role="article"], [role="dialog"], [role="menu"]')) return false;
           const description = label(el) + " " + [...el.querySelectorAll('img, svg image')].map(image => image.getAttribute("alt") || image.getAttribute("aria-label") || "").join(" ");
-          if (!/profile picture|头像|頭像|大頭貼/i.test(description) || /see profile picture|view profile picture|查看|檢視/i.test(label(el))) return false;
+          if (!(ui.contains("avatarSubject", description) || /profile picture|头像|頭像|大頭貼/i.test(description)) ||
+              ui.matches(el, "avatarView") || /see profile picture|view profile picture|查看|檢視/i.test(label(el))) return false;
           const rect = el.getBoundingClientRect();
           return rect.width >= 100 && rect.height >= 100 && rect.top < 600;
         }), "主页头像或编辑头像按钮");
@@ -78,7 +81,7 @@
     },
     async save() {
       const save = await waitFor(() => dialogs().reverse()
-        .filter(dialog => /profile picture|头像|頭像|大頭貼/i.test(label(dialog)))
+        .filter(dialog => ui.contains("avatarSubject", label(dialog)) || /profile picture|头像|頭像|大頭貼/i.test(label(dialog)))
         .flatMap(buttons).find(el => matches(el, saveWords) && el.getAttribute("aria-disabled") !== "true" && !el.disabled), "头像保存按钮", 60000);
       const editor = save.closest('[role="dialog"]');
       await activate();
@@ -89,12 +92,12 @@
       save.click();
       await waitFor(() => !editor.isConnected || !visible(editor), "保存完成", 60000);
       await delay(1000);
-      const error = [...document.querySelectorAll('[role="alert"]')].filter(visible).map(label).find(text => /error|failed|couldn't|could not|出错|出錯|错误|失败|失敗|錯誤|无法|無法/i.test(text));
+      const error = [...document.querySelectorAll('[role="alert"]')].filter(visible).map(label).find(text => ui.contains("error", text) || /error|failed|couldn't|could not|出错|出錯|错误|失败|失敗|錯誤|无法|無法/i.test(text));
       if (error) throw new Error(error);
       const deadline = Date.now() + 10000;
       while (Date.now() < deadline) {
         const success = [...document.querySelectorAll('[role="alert"], [role="status"]')].filter(visible).map(label)
-          .some(text => /profile picture.*(updated|saved)|(?:头像|頭像|大頭貼).*(更新|保存|储存|儲存|成功)/i.test(text));
+          .some(text => ui.success("avatar", text));
         const currentPictures = pictureContainer?.isConnected ? pictureSources(pictureContainer) : [];
         const changed = originalPictures.length > 0 && currentPictures.some(src => !originalPictures.includes(src));
         if (success || changed) return {confirmed: true};
