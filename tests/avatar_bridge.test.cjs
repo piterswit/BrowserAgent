@@ -212,6 +212,15 @@ test("invalid paths never attach debugger", async () => {
   assert.equal(b.detached(), 0);
 });
 
+for (const image of ["/Users/demo/图片/avatar.png", "/home/demo/photos/avatar.jpg"]) {
+  test("avatar supports a Unix absolute path: " + image, async () => {
+    const b = bridge("input"); b.context.image = image;
+    await vm.runInContext('runAvatarChange(image, "https://www.facebook.com/profile.php?id=123")', b.context);
+    assert.equal(b.messages.at(-1).success, true);
+    assert.equal(b.commands.find(command => command.method === "DOM.setFileInputFiles").params.files[0], image);
+  });
+}
+
 test("identity lookup opens and closes only a background task tab", async () => {
   const b = bridge("input");
   const result = await vm.runInContext("getFBIdentity()", b.context);

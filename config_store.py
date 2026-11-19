@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from platform_support import user_data_directory
 
 
 def application_directory():
@@ -11,8 +12,13 @@ def application_directory():
     return Path(__file__).resolve().parent
 
 
+def configuration_folder(directory=None):
+    base = Path(directory) if directory is not None else application_directory() if sys.platform == "win32" else user_data_directory()
+    return base / "conf"
+
+
 def load_configuration(directory=None):
-    path = Path(directory or application_directory()) / "conf" / "config.json"
+    path = configuration_folder(directory) / "config.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
@@ -21,7 +27,7 @@ def load_configuration(directory=None):
 
 
 def save_configuration(data, directory=None):
-    folder = Path(directory or application_directory()) / "conf"
+    folder = configuration_folder(directory)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

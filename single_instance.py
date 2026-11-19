@@ -3,9 +3,10 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 from pathlib import Path
+import sys
 
 
-class SingleInstance:
+class WindowsSingleInstance:
     def __init__(self, name="BrowserAgent.FBBridge"):
         suffix = hashlib.sha256(str(Path.home()).casefold().encode("utf-8")).hexdigest()[:24]
         self.name = f"Local\\{name}.{suffix}"
@@ -111,3 +112,9 @@ class SingleInstance:
             if handle:
                 self.kernel.CloseHandle(handle)
                 setattr(self, attribute, None)
+
+
+if sys.platform == "win32":
+    SingleInstance = WindowsSingleInstance
+else:
+    from posix_instance import PosixSingleInstance as SingleInstance

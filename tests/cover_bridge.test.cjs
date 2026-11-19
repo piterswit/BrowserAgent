@@ -68,8 +68,8 @@ function bridge({mode = "input", fail = "", confirmed = true} = {}) {
     context.coverRequest = {task_id: taskId, file_path: "D:\\covers\\wide.png", profile_url: profile, ...overrides};
     return vm.runInContext("runCoverChange(coverRequest)", context);
   };
-  const reply = async (cmd, tabId = 99, id = taskId) => new Promise(resolve => {
-    const result = runtime[0]({cmd, operationId: id},
+  const reply = async (cmd, tabId = 99, id = taskId, payload = {}) => new Promise(resolve => {
+    const result = runtime[0]({...payload, cmd, operationId: id},
       {id: "test", frameId: 0, url: profile, tab: {id: tabId}}, resolve);
     if (result !== true) resolve(undefined);
   });
@@ -102,6 +102,45 @@ test("invalid cover requests never attach the debugger", async () => {
     assert.equal(b.messages.at(-1).success, false);
   }
 });
+
+for (const image of ["/Users/demo/图片/cover.png", "/home/demo/photos/cover.jpg"]) {
+  test("cover supports a Unix absolute path: " + image, async () => {
+    const b = bridge(); await b.run({file_path: image});
+    assert.equal(b.messages.at(-1).confirmed, true);
+    assert.equal(b.commands.find(command => command.method === "DOM.setFileInputFiles").params.files[0], image);
+  });
+}
+
+test("absolute image path validation is shared by avatar, posts and cover requests", () => {
+  const b = bridge();
+  for (const value of ["/Users/demo/photo.webp", "/home/demo/图片/a b.png", "D:\\photos\\x.jpg", "\\\\server\\photos\\x.png"]) {
+    b.context.imagePath = value;
+    assert.equal(vm.runInContext("isAbsoluteImagePath(imagePath)", b.context), true, value);
+  }
+  for (const value of ["photo.jpg", "https://example.com/x.jpg", "/tmp/payload.exe", "/tmp/a\u0000.jpg", "/tmp/a\n.jpg"]) {
+    b.context.imagePath = value;
+    assert.equal(vm.runInContext("isAbsoluteImagePath(imagePath)", b.context), false, value);
+  }
+});
+
+for (const image of ["/Users/demo/图片/post.png", "/home/demo/photos/post.jpg"]) {
+  test("post upload preserves Unix absolute path through the debugger: " + image, async () => {
+    const b = bridge();
+    const execute = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => {
+      if (options.files?.includes("publish_post.js")) {
+        assert.equal((await b.reply("fb_post_upload")).accepted, true);
+        assert.equal((await b.reply("fb_post_submitting")).accepted, true);
+        await b.reply("fb_post_result", 99, taskId, {success: true, confirmed: true, submitted: true});
+      }
+      return execute(options);
+    };
+    b.context.postRequest = {task_id: taskId, text: "A local test", profile_url: profile, image_path: image};
+    await vm.runInContext("runPost(postRequest)", b.context);
+    assert.equal(b.messages.at(-1).success, true);
+    assert.equal(b.commands.find(command => command.method === "DOM.setFileInputFiles").params.files[0], image);
+  });
+}
 
 test("a changed account fails before upload", async () => {
   const b = bridge();

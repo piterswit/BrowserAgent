@@ -57,6 +57,8 @@ const taskTabs = new Set();
 let taskTabCleanup = Promise.resolve();
 let avatarOperation = null;
 let postOperation = null;
+const isAbsoluteImagePath = value => typeof value === "string" && value.length <= 4096 &&
+  !/[\0\r\n]/.test(value) && /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(value) && /\.(jpg|jpeg|png|webp)$/i.test(value);
 const normalizeTaskSettings = value => ({
   activity_minutes: Number.isInteger(value?.activity_minutes) && value.activity_minutes >= 1 && value.activity_minutes <= 1440 ? value.activity_minutes : 5,
   cancel_request_limit: Number.isInteger(value?.cancel_request_limit) && value.cancel_request_limit >= 1 && value.cancel_request_limit <= 1000 ? value.cancel_request_limit : 100,
@@ -386,7 +388,7 @@ async function runAvatarChange(filePath, expectedProfile) {
     }
   };
   try {
-    if (typeof filePath !== "string" || !/^(?:[a-z]:[\\/]|\\\\)/i.test(filePath) || !/\.(jpg|jpeg|png|webp)$/i.test(filePath)) {
+    if (!isAbsoluteImagePath(filePath)) {
       throw new Error("头像图片路径无效");
     }
     if (!expectedProfile || !/^https:\/\/www\.facebook\.com\//.test(expectedProfile)) throw new Error("账号尚未识别，请重新连接插件");
@@ -490,8 +492,7 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
     if (activeRun) throw new Error("当前账号正在活跃，请结束后再发帖");
     if (typeof text !== "string" || !text.trim() || [...text].length > 5000) throw new Error("贴文内容无效");
     if (typeof profile !== "string" || !profile.startsWith("https://www.facebook.com/")) throw new Error("账号尚未识别，请重新连接插件");
-    if (imagePath != null &&
-        (typeof imagePath !== "string" || !/^(?:[a-z]:[\\/]|\\\\)/i.test(imagePath) || !/\.(jpg|jpeg|png|webp)$/i.test(imagePath))) {
+    if (imagePath != null && !isAbsoluteImagePath(imagePath)) {
       throw new Error("贴文图片路径无效");
     }
   } catch (error) {
@@ -595,8 +596,7 @@ async function runCoverChange(msg) {
   try {
     requireAvailableBrowser();
     if (activeRun) throw new Error("当前账号正在活跃，请结束后再更换封面");
-    if (typeof msg.file_path !== "string" || !/^(?:[a-z]:[\\/]|\\\\)/i.test(msg.file_path) ||
-        !/\.(jpg|jpeg|png|webp)$/i.test(msg.file_path)) throw new Error("封面图片路径无效");
+    if (!isAbsoluteImagePath(msg.file_path)) throw new Error("封面图片路径无效");
     if (typeof msg.profile_url !== "string" || !msg.profile_url.startsWith("https://www.facebook.com/")) {
       throw new Error("账号尚未识别，请重新连接插件");
     }

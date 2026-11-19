@@ -16,7 +16,7 @@ class ConfigurationTest(unittest.TestCase):
         with patch.object(sys, "frozen", True, create=True), \
                 patch.object(sys, "executable", "D:/Apps/BrowserAgent/server.exe"), \
                 patch.object(sys, "_MEIPASS", "D:/Temp/extracted", create=True):
-            self.assertEqual(config_store.application_directory(), Path("D:/Apps/BrowserAgent"))
+            self.assertEqual(config_store.application_directory(), Path("D:/Apps/BrowserAgent").resolve())
 
     def test_roundtrip_and_atomic_replace(self):
         with tempfile.TemporaryDirectory() as directory:

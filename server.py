@@ -16,7 +16,8 @@ from tkinter import ttk, filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
-from config_store import load_configuration, save_configuration
+from config_store import load_configuration, save_configuration, configuration_folder
+from platform_support import keep_awake, set_app_identity, font_family
 from system_theme import system_theme_name
 from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
@@ -28,19 +29,9 @@ APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
 
 # 防止系统进入睡眠
-import ctypes, atexit
+import ctypes
 
-ES_CONTINUOUS = 0x80000000
-ES_SYSTEM_REQUIRED = 0x00000001
-ES_DISPLAY_REQUIRED = 0x00000002
-
-ctypes.windll.kernel32.SetThreadExecutionState(
-    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
-)
-
-atexit.register(
-    lambda: ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-)
+keep_awake()
 
 
 class App:
@@ -58,7 +49,7 @@ class App:
             self.window_icon = tk.PhotoImage(file=str(icon_folder / "bridge-128.png"))
             self.root.iconphoto(True, self.window_icon)
             self.header_icon = tk.PhotoImage(file=str(icon_folder / "bridge-32.png"))
-        if (icon_folder / "bridge.ico").exists():
+        if sys.platform == "win32" and (icon_folder / "bridge.ico").exists():
             self.root.iconbitmap(str(icon_folder / "bridge.ico"))
             self.root.iconbitmap(default=str(icon_folder / "bridge.ico"))
         self.default_avatar = tk.PhotoImage(file=str(icon_folder / "avatar-placeholder.png")) if (icon_folder / "avatar-placeholder.png").exists() else tk.PhotoImage(width=36, height=36)
@@ -83,7 +74,7 @@ class App:
             self.bridge_key = prepare_native_bridge()
         except (OSError, ValueError, KeyError):
             self.root.after(0, lambda: messagebox.showerror(
-                "自动连接不可用", "本机通信组件注册失败。请确认软件的 conf 目录包含 FB_bridge_host.exe，且当前用户目录及注册表可写，然后重启软件。"))
+                "自动连接不可用", "本机通信组件注册失败。请检查当前用户配置目录的写入权限、通信组件及 Python 环境，再重启软件。"))
         self.config_timer = None
 
         self.build_ui()
@@ -122,6 +113,8 @@ class App:
             self.root.after_idle(self.apply_titlebar_theme)
 
     def apply_titlebar_theme(self, target=None):
+        if sys.platform != "win32":
+            return  # Native titlebars follow the window manager on macOS/Linux.
         try:
             ancestor = ctypes.windll.user32.GetAncestor
             ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
@@ -147,12 +140,13 @@ class App:
     def apply_theme_styles(self):
         style = ttk.Style(self.root)
         dark = self.current_theme == "darkly"
-        style.configure(".", font=("Microsoft YaHei UI", 10))
+        family = font_family()
+        style.configure(".", font=(family, 10))
         for name in ("Treeview", "Accounts.Treeview"):
-            style.configure(name, rowheight=40, font=("Microsoft YaHei UI", 10))
-            style.configure(name + ".Heading", font=("Microsoft YaHei UI", 10, "normal"), padding=(10, 12))
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 20, "normal"))
-        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 11, "normal"))
+            style.configure(name, rowheight=40, font=(family, 10))
+            style.configure(name + ".Heading", font=(family, 10, "normal"), padding=(10, 12))
+        style.configure("Title.TLabel", font=(family, 20, "normal"))
+        style.configure("Section.TLabel", font=(family, 11, "normal"))
         style.configure("Muted.TLabel", foreground="#c4cbd3" if dark else "#596674")
         PostManager.configure_styles(style, dark)
         for name, background, foreground, border, hover in (
@@ -578,7 +572,7 @@ class App:
             save_configuration(self.configuration)
             return True
         except OSError as error:
-            messagebox.showerror("配置保存失败", f"无法写入软件目录下的 conf/config.json：\n{error}")
+            messagebox.showerror("配置保存失败", f"无法写入配置文件 {configuration_folder() / 'config.json'}：\n{error}")
             return False
 
     def close_application(self):
@@ -963,7 +957,7 @@ def main():
     try:
         if not instance.claim():
             return
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BrowserAgent.FBBridge")
+        set_app_identity()
         root = tb.Window(themename=system_theme_name(), iconphoto=None)
         # Let Tk finish building and positioning the desktop before its first paint.
         root.withdraw()

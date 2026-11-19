@@ -20,7 +20,8 @@ MAX_REQUEST = 4096
 
 def state_directory():
     if sys.platform != "win32":
-        raise OSError("Native bridge requires Windows")
+        from platform_support import user_data_directory
+        return user_data_directory() / "NativeBridge"
     return Path(os.environ["LOCALAPPDATA"]) / "BrowserAgent" / "NativeBridge"
 
 
@@ -67,6 +68,9 @@ def atomic_write(path, data):
 
 
 def load_secret(folder=None):
+    if sys.platform != "win32":
+        from posix_native import load_secret as load_posix_secret
+        return load_posix_secret(folder)
     path = Path(folder or state_directory()) / "credential.dpapi"
     if path.stat().st_size > 8192:
         raise ValueError("Invalid credential size")
@@ -77,6 +81,9 @@ def load_secret(folder=None):
 
 
 def ensure_secret(folder=None):
+    if sys.platform != "win32":
+        from posix_native import ensure_secret as ensure_posix_secret
+        return ensure_posix_secret(folder)
     folder = Path(folder or state_directory())
     folder.mkdir(parents=True, exist_ok=True)
     # Serialize creation across independent desktop instances. The host only reads.
@@ -141,6 +148,9 @@ def source_native_host(folder):
 
 def prepare_native_bridge(folder=None, executable=None, frozen=None):
     """Register the host in HKCU on startup, repairing paths after a move."""
+    if sys.platform != "win32":
+        from posix_native import prepare_native_bridge as prepare_posix_bridge
+        return prepare_posix_bridge(folder, executable, frozen)
     import winreg
     folder = Path(folder or state_directory())
     secret = ensure_secret(folder)
@@ -242,10 +252,10 @@ def native_streams():
 
 
 def main():
-    if sys.platform != "win32" or len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
+    if len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
         return 1
     try:
-        input_stream, output_stream = native_streams()
+        input_stream, output_stream = native_streams() if sys.platform == "win32" else (sys.stdin.buffer, sys.stdout.buffer)
         return serve_native(sys.argv[1], input_stream, output_stream)
     except (OSError, ValueError):
         return 1

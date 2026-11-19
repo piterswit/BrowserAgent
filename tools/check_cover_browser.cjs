@@ -205,8 +205,13 @@ async function scenario(port, labels, chooser, denied = false, options = {}) {
 
 async function withBrowser(check) {
   const chrome = [
+    process.env.CHROME_PATH,
     process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google/Chrome/Application/chrome.exe"),
     process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Microsoft/Edge/Application/msedge.exe"),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/microsoft-edge",
   ].find(file => file && fs.existsSync(file));
   assert.ok(chrome, "Chrome or Edge is required");
   const cache = path.resolve(project, ".audit-venv");

@@ -10,10 +10,11 @@ def launch():
     script = Path(__file__).resolve()
     if sys.prefix == sys.base_prefix:
         for environment in (".venv311", ".venv"):
-            pythonw = script.parent / environment / "Scripts" / "pythonw.exe"
+            pythonw = script.parent / environment / ("Scripts/pythonw.exe" if sys.platform == "win32" else "bin/python")
             if pythonw.is_file():
+                options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
                 subprocess.Popen([str(pythonw), str(script), *sys.argv[1:]],
-                                 cwd=script.parent, creationflags=subprocess.CREATE_NO_WINDOW)
+                                 cwd=script.parent, **options)
                 return
 
     from server import main
@@ -24,7 +25,8 @@ if __name__ == "__main__":
     try:
         launch()
     except (ImportError, OSError) as error:
-        ctypes.windll.user32.MessageBoxW(
-            None, f"无法启动 BrowserAgent。\n请检查项目虚拟环境和依赖是否已安装。\n\n{error}",
-            "BrowserAgent", 0x10,
-        )
+        message = f"无法启动 BrowserAgent。\n请检查 Python、Tk 和项目依赖是否已安装。\n\n{error}"
+        if sys.platform == "win32":
+            ctypes.windll.user32.MessageBoxW(None, message, "BrowserAgent", 0x10)
+        else:
+            print(message, file=sys.stderr)

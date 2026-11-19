@@ -1,4 +1,4 @@
-# Windows, Python >=3.11. Resolved 2026-10-22.
+# Python >=3.11. Windows, macOS and Linux; Windows-only packages have markers.
 # Install: python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
 
 websockets==12.0 \
@@ -177,16 +177,19 @@ pillow==13.0.0 \
 altgraph==0.17.5 \
     --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
 
+macholib==1.16.4 ; sys_platform == "darwin" \
+    --hash=sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea
+
 packaging==26.3 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
 
-pefile==2024.8.26 \
+pefile==2024.8.26 ; sys_platform == "win32" \
     --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
 
 pyinstaller-hooks-contrib==2026.9 \
     --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
 
-pywin32-ctypes==0.2.3 \
+pywin32-ctypes==0.2.3 ; sys_platform == "win32" \
     --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
 
 setuptools==84.2.1 \

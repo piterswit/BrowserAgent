@@ -2,6 +2,7 @@ import random
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from platform_support import font_family
 
 
 CAPTIONS = (
@@ -138,7 +139,7 @@ class CaptionManager(tk.Toplevel):
         edit_area = ttk.Frame(panel)
         edit_area.grid(row=2, column=0, sticky="ew", pady=(10, 8))
         self.editor = tk.Text(edit_area, height=5, wrap="word", padx=8, pady=6, undo=True,
-                              font=("Microsoft YaHei UI", 11), highlightthickness=1, borderwidth=0)
+                              font=(font_family(), 11), highlightthickness=1, borderwidth=0)
         edit_scrollbar = ttk.Scrollbar(edit_area, orient="vertical", command=self.editor.yview)
         self.editor.configure(yscrollcommand=edit_scrollbar.set)
         edit_scrollbar.pack(side="right", fill="y")
@@ -229,8 +230,8 @@ class PostManager(tk.Toplevel):
     @staticmethod
     def configure_styles(style, dark):
         color = POST_COLORS["dark" if dark else "light"]
-        style.configure("PostTitle.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 20, "normal"))
-        style.configure("PostLabel.TLabel", foreground=color["text"], font=("Microsoft YaHei UI", 11, "normal"))
+        style.configure("PostTitle.TLabel", foreground=color["text"], font=(font_family(), 20, "normal"))
+        style.configure("PostLabel.TLabel", foreground=color["text"], font=(font_family(), 11, "normal"))
         style.configure("PostHint.TLabel", foreground=color["muted"])
         for name, fill, ink, hover in (
             ("Post.TButton", color["button"], color["text"], color["hover"]),
@@ -251,7 +252,7 @@ class PostManager(tk.Toplevel):
         style.map("Post.Treeview", background=[("selected", color["selected"])],
                   foreground=[("selected", color["selected_text"])])
         style.configure("Post.Treeview.Heading", background=color["header"], foreground=color["text"],
-                        relief="flat", font=("Microsoft YaHei UI", 10, "normal"))
+                        relief="flat", font=(font_family(), 10, "normal"))
         style.map("Post.Treeview.Heading", background=[("active", color["header"])],
                   foreground=[("active", color["text"])])
 

@@ -2,7 +2,7 @@
 
 当前版本：**v0.8.1**。
 
-BrowserAgent 由 Windows 本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求、随机更换头像、个人主页封面和发布贴文。
+BrowserAgent 由本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成，适配 Windows、macOS 和 Linux。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求、随机更换头像、个人主页封面和发布贴文。
 
 ![插件图标](WS%20Browser%20Bridge/icon/bridge-128.png)
 
@@ -50,32 +50,57 @@ Reels 优先点击可见的“下一条/上一条”按钮，约 6% 的翻页尝
 
 ## 环境与安装
 
-- 本地软件使用 Windows、Python 3.11 或以上版本；浏览器和软件运行在同一台电脑。
+- 本地软件适配 Windows、macOS 和 Linux，源码运行需要 Python 3.11 或以上版本及 Tk；浏览器和软件运行在同一台电脑。
 - 扩展要求 Chrome 118 或以上版本。其他 Chromium 浏览器需支持相同扩展 API。
 - 多账号使用独立浏览器用户配置，每个配置加载扩展并登录对应账号。一个配置内的多个标签页共享登录状态，不能当作多个独立账号。
 
-安装依赖并启动本地软件：
+Windows 安装依赖并启动本地软件：
 
 ```powershell
 python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
 pyw .\BrowserAgent.pyw
 ```
 
-源码版可双击 `BrowserAgent.pyw` 启动，或用项目虚拟环境的 `pythonw.exe` 打开该文件。这样启动时不会打开命令行窗口。
+Windows 源码版可双击 `BrowserAgent.pyw` 启动，或用项目虚拟环境的 `pythonw.exe` 打开该文件。这样启动时不会打开命令行窗口。
+
+macOS、Linux 在项目目录创建虚拟环境并运行：
+
+```sh
+python3.11 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+.venv/bin/python BrowserAgent.pyw
+# 已创建环境后也可使用：sh ./start.sh
+```
+
+先确认 `python3.11 -c "import tkinter; print(tkinter.TkVersion)"` 可运行。macOS 的 Python 必须配有兼容的 Tcl/Tk；Linux 通常需要通过系统包管理器安装 `python3-venv`、`python3-tk` 和中文字体（例如 `fonts-noto-cjk`），并使用实际安装的 Python 3.11+ 版本创建环境。Linux 图形界面需要 X11/Wayland 桌面或兼容的显示服务，纯无界面服务器不能直接显示 Tk 窗口。
+
+三个系统使用同一份 **WS Browser Bridge** 插件，支持 Chrome、Edge、Chromium；Safari、Firefox 不在当前适配范围。图片上传支持 `C:\…`、UNC、`/Users/…`、`/home/…` 等绝对路径。Linux 的 Snap/Flatpak 浏览器可能隔离 Native Messaging 或图片目录，此类沙箱发行版需单独验证，优先使用浏览器官方提供的常规安装包。
 
 浏览器打开 `chrome://extensions/`，开启“开发者模式”，点击“加载已解压的扩展程序”，选择仓库中的 **WS Browser Bridge** 目录。
 
 ## 连接账号
 
-通信组件新实现的文件版本为 `0.8.1.1`，约 7.5 KiB。更新时先关闭主程序，完整解压新包，再运行根目录的 `FB_server.exe`，不要仅覆盖主程序而保留 conf 中的旧通信组件。
+Windows 通信组件的文件版本为 `0.8.1.1`，约 7.5 KiB。更新时先关闭主程序，完整解压新包，再运行根目录的 `FB_server.exe`，不要仅覆盖主程序而保留 conf 中的旧通信组件。
 
 启动软件后会自动注册当前用户的 Native Messaging 组件。扩展自动获取凭据，完成双向认证后连接；无需输入、复制或保存配对码。显示“已连接（自动认证）”后即可使用，后续自动重连。
 
-主程序按当前 Windows 用户和登录会话保持单实例；再次打开会恢复并激活已有窗口，不重复启动服务。
+主程序按当前用户保持单实例；Windows 使用命名互斥量与激活事件，macOS/Linux 使用文件锁与激活通知。再次打开会尝试恢复已有窗口，不重复启动服务；Linux 窗口管理器可能限制应用主动抢焦点。
 
-发布包根目录只需运行 `FB_server.exe`；`conf/FB_bridge_host.exe` 是供浏览器后台调用的通信组件，使用独立的无界面 Windows/.NET 组件，不启动 Python、脚本或子进程；不需要手动打开，请保留它的目录位置。软件每次启动会更新 Chrome、Edge 和 Chromium 的当前用户注册路径，移动软件后重新启动即可；无需管理员权限。源码启动会在后台静默编译并缓存同一个无界面组件，不再注册 cmd/Python 启动脚本。组件使用 Windows 系统 .NET Framework 4.x，没有新增 NuGet 包；源码构建需要系统 C# 编译器。组件缺失、权限不足或组织策略禁止 Native Messaging 时会提示错误，不退回无认证连接。
+Windows 发布包根目录运行 `FB_server.exe`；`conf/FB_bridge_host.exe` 是独立的无界面 Windows/.NET 通信组件，不需要手动打开，请保留它的目录位置。源码启动会静默编译并缓存同一个无界面组件，需要系统 C# 编译器。Windows 每次启动会更新当前用户的浏览器注册路径，移动软件后重新启动即可；无需管理员权限。
 
-凭据保存在 `%LOCALAPPDATA%/BrowserAgent/NativeBridge/credential.dpapi`，由当前用户 DPAPI 加密，不写入仓库、发行包、日志或扩展存储。回环消息有双向认证、签名及递增序号，但没有加密，也不防御同一 Windows 用户已被控制的情形。需要重置时先关闭所有软件实例，再删除该凭据文件并重新启动。
+macOS/Linux 启动时自动在当前用户浏览器目录安装 Native Messaging 清单，来源仅允许本项目扩展 ID；配置路径遵循 [Chrome](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) 和 [Edge](https://learn.microsoft.com/en-us/microsoft-edge/extensions/developer-guide/native-messaging) 官方规则。源码模式创建引用当前 Python 和项目路径的可执行启动脚本，移动项目或虚拟环境后应重新启动软件修复路径。发布包使用独立的 `FB_bridge_host` 可执行文件，不依赖用户安装 Python。
+
+Windows 保留 DPAPI 加密凭据；macOS/Linux 的通信凭据位于私有 `NativeBridge` 目录（0700），密钥文件仅当前用户可读写（0600），拒绝不安全权限、损坏数据和符号链接，不会静默替换损坏密钥。三个系统都保留双向认证和消息签名，组件不可用时提示错误，不退回无认证连接。配置、凭据和用户图片不会打包进发布产物。
+
+| 系统 | 设置文件 | 通信凭据目录 |
+| --- | --- | --- |
+| Windows | 软件目录 `conf/config.json` | `%LOCALAPPDATA%/BrowserAgent/NativeBridge` |
+| macOS | `~/Library/Application Support/BrowserAgent/conf/config.json` | 同一 BrowserAgent 目录下的 `NativeBridge` |
+| Linux | `$XDG_CONFIG_HOME/BrowserAgent/conf/config.json`，默认 `~/.config/BrowserAgent/conf/config.json` | 同一 BrowserAgent 目录下的 `NativeBridge` |
+
+界面主题读取 Windows 应用偏好、macOS 外观、Linux GNOME/KDE 偏好；读取失败时使用浅色。macOS/Linux 标题栏由系统窗口管理器绘制。Windows 保留系统防休眠，macOS 在运行期间使用系统 `caffeinate` 防止空闲休眠；Linux 不修改系统电源策略，长任务需要用户自行保持机器唤醒。
+
+Windows 凭据保存在 `%LOCALAPPDATA%/BrowserAgent/NativeBridge/credential.dpapi` 并由当前用户 DPAPI 加密；macOS/Linux 使用上表凭据目录内的 `credential.key` 私有文件。凭据不写入仓库、发行包、日志或扩展存储。回环消息有双向认证、签名及递增序号，但没有加密，也不防御同一操作系统用户已被控制的情形。需要重置时先关闭所有软件实例，再删除对应凭据文件并重新启动。
 
 扩展新增 `nativeMessaging` 权限并用 manifest 公钥固定 ID，更新时需重新加载并确认新增权限。从没有固定 ID 的开发版首次迁移时，浏览器可能识别为新扩展，需重新加载目录并停用重复的旧扩展；不会修改 Facebook 登录数据。
 
@@ -91,7 +116,7 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 
 头像只从当前账号模块、本人主页头像或账号入口读取，不使用首页动态作者头像或无法确定用途的 `og:image`（可能是封面）。读取后缩小成 36px PNG，通过本机连接传给软件；读取失败时显示默认头像，不随意填入其他图片。账号列表行高为 40px，超出缩略图尺寸的图片会缩小。确认更换头像成功后会尝试刷新列表头像。本地界面使用与插件相同的图标，启动时居中显示。右键账号选择“定位浏览器”，只定位该行所属的浏览器配置；不会对所有选中账号执行定位。
 
-本地软件跟随 Windows“应用模式”的深色/浅色设置，启动时读取，运行中每 2 秒检查一次变化。主题切换不会重建账号列表或清空选择、头像和执行结果；右键菜单和状态文字配色同步切换。读取系统偏好失败时使用浅色主题。
+本地软件启动时读取系统深浅主题，运行中每 2 秒检查一次变化。主题切换不会重建账号列表或清空选择、头像和执行结果；右键菜单和状态文字配色同步切换。读取系统偏好失败时使用浅色主题。
 
 本地软件监听 `127.0.0.1:8765–8769`。扩展按顺序尝试端口，每 15 秒发送心跳。端口间隔约 0.75 秒，每次尝试最多等待 3 秒；全部失败后按 5、10、20、30 秒退避重试，最多一个连接和一个重试计时器。后台休眠时由一分钟的 alarm 兜底唤醒，实际重连可能延后。软件重启或连接断开后自动重连，不重复弹出连接失败提示；Chrome 自身仍可能记录 WebSocket 连接拒绝的网络日志，这不是未捕获的插件异常。
 
@@ -125,7 +150,7 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 
 ## 设置
 
-主窗口右上角“设置”提供活跃时长和每次取消请求数量，默认分别为 5 分钟、100 个。窗口与标题栏跟随深浅主题，支持恢复默认；点击“保存设置”后写入 `conf/config.json` 并同步已连接浏览器，重新连接时也会同步。保存失败时保留原设置。变更只对之后启动的任务生效，不改变进行中任务的时长或数量上限。直接从扩展或 URL 启动时使用最近同步的设置，尚未同步则使用默认值。
+主窗口右上角“设置”提供活跃时长和每次取消请求数量，默认分别为 5 分钟、100 个。窗口跟随深浅主题，支持恢复默认；点击“保存设置”后写入上表所列配置文件并同步已连接浏览器，重新连接时也会同步。保存失败时保留原设置。变更只对之后启动的任务生效，不改变进行中任务的时长或数量上限。直接从扩展或 URL 启动时使用最近同步的设置，尚未同步则使用默认值。
 
 ## 批量发帖
 
@@ -157,7 +182,7 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 6. 等待上传和裁剪窗口可保存，再检查任务页账号，点击“保存”。默认使用 Facebook 当前的裁剪设置，不自动调整构图。
 7. 保存前再次激活任务页并向后台登记本次提交。保存窗口关闭后，检查成功提示或个人主页头像图片变化；若保存引起页面跳转、脚本上下文中断，后台尝试重新读取同账号头像复核。没有充分证据时标记“待确认”，不重试提交。回传结果，释放调试器，只关闭本次创建的任务页。
 
-头像目录输入或选择后自动保存到 `conf/config.json`，下次启动恢复。源码运行时配置在 `server.py` 所在目录下；打包运行时在 `server.exe` 所在目录下，不使用工作目录或 PyInstaller 临时解压目录。目录必须可写，写入失败会提示。配置文件损坏或缺失时使用空目录重新选择；文件采用临时文件替换方式保存。开始更换头像前会先停止活跃，避免两个流程同时操作页面。
+头像目录输入或选择后自动保存，下次启动恢复。Windows 配置位于软件目录下的 `conf/config.json`；macOS/Linux 使用上表的当前用户配置目录，不向只读应用包写入，也不使用工作目录或 PyInstaller 临时解压目录。写入失败会提示。配置文件损坏或缺失时使用空目录重新选择；文件采用临时文件替换方式保存。开始更换头像前会先停止活跃，避免两个流程同时操作页面。
 
 换头像从准备开始到任务结束期间，本地软件和插件端都会拒绝该账号的新首页、小组、Reels、自定义活跃、取消好友请求及重复换头像任务；批量选择中的其他空闲账号仍可正常执行。拒绝请求只显示提示，不把正在换头像的状态改成失败或空闲。定位浏览器仍可使用，“停止活跃”不会中断头像上传。头像任务完成或失败后释放互斥状态。插件重新识别账号时更新身份资料，但不清空已有任务状态和执行结果。
 
@@ -206,18 +231,32 @@ python -m PyInstaller --noconfirm --onefile --windowed --name FB_server --specpa
 
 上述 Windows 命令包含软件窗口图标和扩展图标资源，输出为 `dist/FB_server.exe` 和 `dist/conf/FB_bridge_host.exe`。本机已有的 `server.spec` 也已配置图标，可使用 `python -m PyInstaller --noconfirm server.spec` 构建桌面程序，通信组件仍需按上面的命令单独构建；仓库目前将该本机配置、`build`、`dist` 和 `release` 设为忽略文件。
 
+macOS/Linux 在目标系统上构建，不能在 Windows 上交叉生成可运行安装包：
+
+```sh
+.venv/bin/python tools/build_posix_release.py
+```
+
+输出为带系统和架构名称的 `.tar.gz`：macOS 包含 `BrowserAgent.app`，Linux 包含 `FB_server` 和 `conf/FB_bridge_host`。保留解压后的执行权限和目录结构。macOS 同时提供 Intel、Apple Silicon 构建流程；正式向外分发仍需要开发者签名和 Apple 公证，本仓库未配置签名凭据。Linux 二进制以 Ubuntu 22.04 x86_64 为构建基线。
+
+`.github/workflows/cross_platform.yml` 为 Windows、Linux、macOS Apple Silicon 和 Intel 运行依赖安装、Python/插件回归、隔离浏览器流程及原生 POSIX 打包。Linux 在虚拟显示服务中验证主窗口、设置、发帖和文案窗口。可在对应 Actions 运行的 artifacts 中下载 POSIX 包；原有 Windows 标签发布流程保持不变。当前机器为 Windows，本地通过结果不等于 macOS/Linux 原生运行已验证，须以对应原生 CI 和实机联调结果为准。
+
 ## 代码结构与验证
 
 ```text
 server.py                        本地界面、账号管理和 WebSocket 服务
-config_store.py                  软件目录定位、头像目录配置读写
+config_store.py                  跨平台配置目录及原子读写
+platform_support.py              用户目录、字体和系统集成
 bridge_security.py               双向认证、消息签名及来源校验
-native_bridge.py                 DPAPI、当前用户注册及源码模式后台编译
+native_bridge.py                 认证协议、Windows DPAPI/注册及平台分发
+posix_native.py                  macOS/Linux 私有凭据、Native Messaging 注册
+native_host_posix.py             POSIX 通信组件入口
 native_host/BridgeHost.cs         独立无界面 Native Messaging 组件
 tools/build_native_host.ps1       系统 C# 编译器构建 Windows GUI EXE
 single_instance.py               单实例互斥、重复启动通知及已有窗口恢复
-requirements.lock               Windows/Python 3.11+ 完整依赖版本与 wheel 哈希
-system_theme.py                  Windows 应用深浅色偏好读取
+posix_instance.py                macOS/Linux 文件锁及激活通知
+requirements.lock               Python 3.11+ 跨平台依赖与 wheel 哈希
+system_theme.py                  Windows/macOS/GNOME/KDE 深浅偏好读取
 server.spec                      本地打包配置
 WS Browser Bridge/
   manifest.json                  扩展入口和权限
