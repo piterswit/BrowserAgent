@@ -922,9 +922,19 @@ async function openAndInject(url, file) {
   await navigateActivity(tab.id, url, epoch);
   if (activityEpoch !== epoch) return;
   safeSend({type: "status", status: "cancel_friend_requests"});
-  try { await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["fb_ui.js", file]}); }
+  let outcome;
+  try {
+    const results = await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["fb_ui.js", file]});
+    outcome = results[0]?.result;
+  }
   catch (error) { if (activityEpoch === epoch) throw error; }
-  if (activityEpoch === epoch) safeSend({type: "status", status: "stop"});
+  if (activityEpoch !== epoch) return;
+  if (outcome?.error) {
+    safeSend({type: "status", status: "activity_error", error: String(outcome.detail || outcome.error).slice(0, 200)});
+  } else {
+    safeSend({type: "status", status: "stop"});
+    if (outcome?.detail) safeSend({type: "activity_detail", detail: String(outcome.detail).slice(0, 200)});
+  }
 }
 function reportError(error) {
   if (error.name === "AbortError") return;

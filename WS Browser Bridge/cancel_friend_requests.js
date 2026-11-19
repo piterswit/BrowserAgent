@@ -1,316 +1,218 @@
 (() => {
   const ui = window.__fbUI;
   if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
-window.__fbCancelRequestsCtrl?.stop();
-const pending = new Map();
-const notices = new Set();
-const taskPath = location.pathname;
-const abort = () => Object.assign(new Error("取消好友请求任务已停止"), {name: "AbortError"});
-const ctrl = {
+  window.__fbCancelRequestsCtrl?.stop();
+  const pending = new Map();
+  const taskPath = location.pathname;
+  const controls = '[role="button"], button, a[href]';
+  const cancelWords = ui.pattern("cancelRequest");
+  const sentWords = ui.pattern("sentRequests");
+  const blockWords = ui.pattern("blocked", null, {contains: true});
+  const securityWords = ui.pattern("security", null, {contains: true});
+  const attemptedNodes = new WeakMap(), attemptedProfiles = new Set();
+  let attempted = 0, confirmed = 0, progress;
+  const ctrl = {
     run: true,
     stop() {
-        if (!this.run) return;
-        this.run = false;
-        for (const [id, reject] of pending) { clearTimeout(id); reject(abort()); }
-        pending.clear();
-        for (const node of notices) node.remove();
-        notices.clear();
-        if (window.__fbCancelRequestsCtrl === this) window.__fbCancelRequestsCtrl = null;
+      if (!this.run) return;
+      this.run = false;
+      for (const [id, reject] of pending) {
+        clearTimeout(id);
+        reject(Object.assign(new Error("取消好友请求任务已停止"), {name: "AbortError"}));
+      }
+      pending.clear();
+      progress?.remove();
+      if (window.__fbCancelRequestsCtrl === this) window.__fbCancelRequestsCtrl = null;
     }
-};
-window.__fbCancelRequestsCtrl = ctrl;
-function guard() {
+  };
+  window.__fbCancelRequestsCtrl = ctrl;
+  const result = (detail, error = "") => ({attempted, confirmed, detail, error});
+  const guard = () => {
     if (location.pathname !== taskPath) ctrl.stop();
-    if (!ctrl.run) throw abort();
-}
-const requestLabels = {
-    cancel: /^(Cancel request|取消请求|取消好友请求|取消邀请|取消邀請|取消邀约|取消邀約|取消交友邀請|取消好友邀請)$/i,
-    sent: /^(View sent requests|Sent requests|查看已发送请求|查看已发送的请求|查看发出的请求|已发送的请求|发出的请求|查看已傳送邀請|查看送出的邀請|查看已送出邀請|查看已送出的邀請|查看已發送的邀請|查看已發送的交友邀請|已傳送邀請|送出的邀請|已送出的邀請|已發送的邀請|已發送的交友邀請)$/i,
-    blocked: /could(?:n['’]t| not) process|unable to process|please try again|try again later|temporarily blocked|无法处理|無法處理|请重试|请稍后再试|請重試|請再試一次|請稍後再試|暂时被封锁|暫時遭到封鎖|暫時被封鎖/i
-};
-requestLabels.cancel = ui.pattern("cancelRequest", requestLabels.cancel);
-requestLabels.sent = ui.pattern("sentRequests", requestLabels.sent);
-requestLabels.blocked = ui.pattern(["blocked", "security"], requestLabels.blocked, {contains: true});
-const requestText = el => (el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim();
-
-// ===== 基础工具 =====
-function rand(a, b) {
-    return Math.floor(Math.random() * (b - a + 1)) + a;
-}
-
-function sleep(ms) {
+    if (!ctrl.run) throw Object.assign(new Error("取消好友请求任务已停止"), {name: "AbortError"});
+  };
+  const sleep = ms => {
     guard();
     return new Promise((resolve, reject) => {
-        const id = setTimeout(() => { pending.delete(id); resolve(); }, ms);
-        pending.set(id, reject);
-    }).then(() => guard());
-}
-
-function isVisible(el) {
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 &&
-        r.height > 0 &&
-        r.bottom > 0 &&
-        r.top < window.innerHeight;
-}
-
-// 等待元素
-async function waitFor(fn, timeout = 15000) {
-    const t = Date.now();
-
-    while (Date.now() - t < timeout) {
-        guard();
-        const ret = fn();
-        if (ret) return ret;
-        await sleep(300);
+      const id = setTimeout(() => { pending.delete(id); resolve(); }, ms);
+      pending.set(id, reject);
+    }).then(guard);
+  };
+  const style = node => window.getComputedStyle?.(node) || {};
+  const visible = node => {
+    if (!node || node.isConnected === false) return false;
+    for (let parent = node; parent; parent = parent.parentElement) {
+      const css = style(parent);
+      if (parent.hidden || parent.inert || parent.getAttribute?.("aria-hidden") === "true" ||
+          css.display === "none" || /hidden|collapse/.test(css.visibility || "") ||
+          css.opacity === "0") return false;
     }
-
-    return null;
-}
-
-async function main() {
-    let progressBox = null;
-    function showProgress(text){
-        if(!progressBox){
-            progressBox = document.createElement("div");
-            progressBox.style.cssText = `
-                position:fixed;
-                top:20px;
-                left:50%;
-                transform:translateX(-50%);
-                z-index:999999;
-                background:#1877f2;
-                color:#fff;
-                padding:10px 20px;
-                border-radius:8px;
-                font-size:14px;
-                font-weight:bold;
-                box-shadow:0 4px 12px rgba(0,0,0,.3);
-            `;
-            document.body.appendChild(progressBox);
-            notices.add(progressBox);
-        }
-
-        progressBox.innerText = text;
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight)) return false;
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (!/auto|scroll|hidden|clip/.test(style(parent).overflowY || "")) continue;
+      const clip = parent.getBoundingClientRect();
+      if (rect.bottom <= clip.top || rect.top >= clip.bottom) return false;
     }
-    function hideProgress(){
-        if(progressBox){
-            progressBox.remove();
-            progressBox = null;
-        }
-    }
-
-    // 漂亮的、不阻塞代码的动态通知气泡
-    function showToast(message, bgColor = '#1877f2') {
-        const toast = document.createElement('div');
-        toast.innerText = message;
-        toast.style.position = 'fixed';
-        toast.style.top = '30px';
-        toast.style.left = '50%';
-        toast.style.transform = 'translateX(-50%)';
-        toast.style.backgroundColor = bgColor;
-        toast.style.color = 'white';
-        toast.style.padding = '14px 28px';
-        toast.style.borderRadius = '8px';
-        toast.style.zIndex = '999999';
-        toast.style.boxShadow = '0 6px 20px rgba(0,0,0,0.2)';
-        toast.style.fontSize = '15px';
-        toast.style.fontWeight = 'bold';
-        toast.style.fontFamily = 'Segoe UI, Helvetica, Arial, sans-serif';
-        toast.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
-        document.body.appendChild(toast);
-        notices.add(toast);
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(-50%) translateY(-10px)';
-            setTimeout(() => toast.remove(), 500);
-        }, 3000);
-    }
-
-    // 辅助函数：深度检测当前页面有没有弹出FB风控警告
-    function checkFBBlockPopup() {
-        return [...document.querySelectorAll('[role="dialog"], [role="alert"]')]
-            .some(el => isVisible(el) && requestLabels.blocked.test(el.innerText || ""));
-    }
-
-    // 1. 获取页面上所有的弹窗
-    let dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
-
-    // 在请求弹窗中匹配已发送请求或取消请求控件
-    let modalContainer = dialogs.find(dialog => {
-        return [...dialog.querySelectorAll('[role="heading"], h1, h2, [role="button"], button')]
-            .some(el => requestLabels.sent.test(requestText(el)) || requestLabels.cancel.test(requestText(el)));
-    });
-
-    if (!modalContainer) {
-        alert("❌ 未能找到好友请求弹窗！\n请确保弹窗已经打开。\n" + ui.describe("好友请求入口"));
-        return;
-    }
-
-    if (checkFBBlockPopup()) return;
-
-    // 精准抓取真正拥有滚动条的核心 DOM 元素
-    let scrollElement = Array.from(modalContainer.querySelectorAll('div')).find(el => {
-        const style = window.getComputedStyle(el);
-        return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
-    }) || modalContainer;
-
-    showToast("🚀 多语言识别已启动！\n正在一路滚到底，期间会严密监控FB警告弹窗...", "#1877f2");
-    console.log("%c========= 🚀 第一阶段：多语言识别·纯滚动长征 =========", "color: cyan; font-weight: bold;");
-
-    let scrollCount = 0;
-    let noChangeCount = 0;
-    let lastScrollHeight = scrollElement.scrollHeight;
-
-    // 纯滚动阶段
-    const totalScroll = rand(20, 30);
-    console.log(`开始 ${totalScroll} 次滚动`);
-    for (let scrollCount = 1; scrollCount <= totalScroll; scrollCount++) {
-        guard();
-        scrollElement.scrollTop = scrollElement.scrollHeight;
-
-        await sleep(3500);
-
-        scrollElement.scrollTop -= 30;
-        await sleep(150);
-        scrollElement.scrollTop += 30;
-
-        // 滚动期间也顺便检测一下有没有突发风控
-        if (checkFBBlockPopup()) {
-            showToast("🚨 滚动期间遭遇FB拦截，脚本紧急终止！", "#dc2626");
-            alert("🚨 滚动加载失败！检测到页面已弹出FB官方限制警告。\n为了不加重处罚，脚本已自动断电停机！");
-            return;
-        }
-
-        let currentHeight = scrollElement.scrollHeight;
-        console.log(`[第 ${scrollCount} 次全力向下滚] 历史高度: ${lastScrollHeight} -> 最新高度: ${currentHeight}`);
-
-        if (currentHeight === lastScrollHeight) {
-            noChangeCount++;
-            if (noChangeCount >= 5) {
-                console.log("%c🎉 纯滚动长征结束！全员列表已全部拉取到浏览器内存中！", "color: green; font-weight: bold;");
-                break;
-            }
-        } else {
-            noChangeCount = 0;
-            lastScrollHeight = currentHeight;
-        }
-    }
-    console.log(`🎉 已完成 ${totalScroll} 次滚动！`);
-
-    console.log("%c========= 🎯 第二阶段：终极收割批量取消 =========", "color: magenta; font-weight: bold;");
-
-    let buttons = Array.from(modalContainer.querySelectorAll('div[role="button"], button')).filter(btn => {
-        return isVisible(btn) && requestLabels.cancel.test(requestText(btn));
-    });
-
-    console.log(`%c统计：总共在页面上成功憋出了 ${buttons.length} 个可见的取消按钮！`, "color: #00ff00; font-weight: bold;");
-
-    if (buttons.length === 0) {
-        showToast("提示：未能在页面上找到任何有效的取消按钮。", "#eab308");
-        return;
-    }
-
-    // 3. 开始排队执行点击
-    let consecutiveFailures = 0;
-    let successCount = 0;
-
-    for (let i = buttons.length - 1; i >= 0; i--) {
-        guard();
-        let isSuccess = false;
-        showProgress(`取消好友请求 ${buttons.length - i}/${buttons.length}`);
-        try {
-            buttons[i].click();
-            console.log(`[总清缴进度: ${i + 1}/${buttons.length}] 已发送点击指令...`);
-
-            // 给网页 UI 1.2秒的初步反应时间，用来渲染潜在的风控警告弹窗
-            await sleep(1200);
-
-            // 【天眼核心防御】：优先检查有没有冒出FB风控拦截弹窗
-            if (checkFBBlockPopup()) {
-                showToast("🚨 捕获到FB官方风控弹窗！紧急熔断！", "#dc2626");
-                alert(`🚨 抓到你了！页面已弹出含有“无法处理/重试”的FB拦截警告。\n说明频率已经撞枪口了，脚本已瞬间为你断电熔断！\n本次运行安全取消了 ${successCount} 个请求。`);
-                return; // 彻底退出脚本
-            }
-
-            // 若没有风控弹窗，再走常规的DOM变化检测
-            const isStillInPage = document.body.contains(buttons[i]);
-            const textAfterClick = isStillInPage ? requestText(buttons[i]) : "";
-
-            if (isStillInPage && requestLabels.cancel.test(textAfterClick)) {
-                console.warn(`⚠️ 第 ${i + 1} 个按钮点击后依然完好存在且文字未变。`);
-                isSuccess = false;
-            } else {
-                isSuccess = true;
-            }
-        } catch (err) {
-            if (err.name === "AbortError") throw err;
-            console.error(`第 ${i + 1} 个按钮点击遭遇故障:`, err);
-            isSuccess = false;
-        }
-
-        // 常规连续 2 次无响应熔断（作为后备屏障）
-        if (isSuccess) {
-            consecutiveFailures = 0;
-            successCount++;
-        } else {
-            consecutiveFailures++;
-            console.error(`❌ 警告：遭遇连续第 ${consecutiveFailures} 次状态未改变！`);
-            if (consecutiveFailures >= 2) {
-                showToast("🚨 连续2次无响应，安全熔断！", "#dc2626");
-                alert(`🚨 紧急停止！检测到连续 2 次取消无响应。\n即使没跳弹窗，可能接口也已被静默限制。\n为了稳妥，脚本已自动执行熔断保护！\n本次运行成功取消了 ${successCount} 个请求。`);
-                return;
-            }
-        }
-
-        // 安全防封延迟：稳定在随机 2 ~ 3.5 秒
-        const clickDelay = Math.floor(Math.random() * 1500) + 2000;
-        await new Promise(resolve => setTimeout(resolve, clickDelay));
-    }
-
-    hideProgress();
-    alert(`🏁 战役胜利！\n本次一口气自动帮你取消了 ${successCount} 个好友请求！`);
-
-}
-
-// ===== 主循环 =====
-async function auto() {
+    return true;
+  };
+  const matches = (node, matcher) => ui.values(node).some(value => matcher.test(value));
+  const enabled = node => visible(node) && !node.disabled && node.getAttribute?.("aria-disabled") !== "true";
+  const buttons = scope => [...scope.querySelectorAll(controls)];
+  const dialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(visible);
+  const blocked = () => [...document.querySelectorAll('[role="dialog"], [role="alert"], [role="alertdialog"]')]
+    .filter(visible).some(node => blockWords.test(node.innerText || "") ||
+      securityWords.test(node.getAttribute?.("aria-label") || "") ||
+      [...node.querySelectorAll('[role="heading"], h1, h2')].some(heading =>
+        visible(heading) && securityWords.test(heading.innerText || "")) ||
+      [...node.querySelectorAll('input[type="password"], input[autocomplete="one-time-code"]')].some(visible));
+  const ensureUnblocked = () => {
     guard();
-
-    // 进入好友请求页
-    if (!location.pathname.startsWith("/friends/requests")) {
-        location.href = "https://www.facebook.com/friends/requests";
-        return;
+    if (blocked()) throw new Error("页面出现限制或登录验证，已停止取消请求，请人工检查");
+  };
+  const show = text => {
+    if (!progress) {
+      progress = document.createElement("div");
+      progress.style.cssText = "position:fixed;top:20px;left:50%;transform:translateX(-50%);" +
+        "z-index:999999;background:#1877f2;color:#fff;padding:10px 20px;border-radius:8px;" +
+        "font:14px 'Segoe UI',sans-serif;pointer-events:none";
+      document.body.appendChild(progress);
     }
-
-    // 等页面稳定
-    await sleep(5000);
-
-    // 找"查看已发送请求"
-    const btn = await waitFor(() => {
-
-        return [...document.querySelectorAll('[role="button"], button, a[href]')]
-            .find(el => isVisible(el) && requestLabels.sent.test(requestText(el)));
-
-    });
-
-    if (!btn) {
-        console.log("没找到按钮");
-        return;
+    progress.innerText = text;
+  };
+  const waitFor = async (finder, timeout = 15000) => {
+    const until = Date.now() + timeout;
+    while (Date.now() < until) {
+      ensureUnblocked();
+      const value = finder();
+      if (value) return value;
+      await sleep(300);
     }
-
-    btn.click();
-
-    console.log("打开弹框");
-
-    await sleep(rand(3000,5000));
-
-    await main();
-}
-
-return auto().catch(error => {
-    if (error.name !== "AbortError") console.error("取消好友请求失败", error);
-}).finally(() => ctrl.stop());
+    return null;
+  };
+  const findModal = () => {
+    const candidates = dialogs().filter(dialog =>
+      [...dialog.querySelectorAll('[role="heading"], h1, h2'), ...buttons(dialog)]
+        .some(node => visible(node) && (matches(node, sentWords) || matches(node, cancelWords))));
+    return candidates.length === 1 ? candidates[0] : null;
+  };
+  const scrollContainer = modal => {
+    const candidates = [modal, ...modal.querySelectorAll("div")].filter(node =>
+      /auto|scroll/.test(style(node).overflowY || "") && node.scrollHeight > node.clientHeight);
+    // Prefer the request list itself over unrelated scrollable headers or side panels.
+    return candidates.find(node => buttons(node).some(button => matches(button, cancelWords))) ||
+      candidates.sort((a, b) => b.clientHeight - a.clientHeight)[0] || modal;
+  };
+  const profileKey = (button, modal) => {
+    // A recycled DOM button can belong to another person after virtual-list scrolling.
+    for (let row = button.parentElement, depth = 0; row && row !== modal && depth < 6; row = row.parentElement, depth++) {
+      if (buttons(row).filter(node => matches(node, cancelWords)).length > 1) break;
+      const links = [...row.querySelectorAll('a[href]')].map(link => {
+        try {
+          const url = new URL(link.href, location.href);
+          if (!/(^|\.)facebook\.com$/.test(url.hostname)) return null;
+          if (url.pathname === "/profile.php" && /^[1-9]\d+$/.test(url.searchParams.get("id") || "")) {
+            return "/profile.php?id=" + url.searchParams.get("id");
+          }
+          const path = url.pathname.replace(/\/$/, "");
+          return /^\/[^/]+$/.test(path) && !/^\/(?:friends|me|settings|help|login|checkpoint|groups)$/i.test(path) ? path : null;
+        } catch { return null; }
+      }).filter(Boolean);
+      const unique = [...new Set(links)];
+      if (unique.length === 1) return unique[0];
+    }
+    return "";
+  };
+  const wasAttempted = (button, modal) => {
+    const key = profileKey(button, modal);
+    return key ? attemptedProfiles.has(key) : attemptedNodes.has(button);
+  };
+  const summary = () => "已尝试 " + attempted + " 个，界面确认取消 " + confirmed + " 个";
+  async function auto() {
+    guard();
+    if (!location.pathname.startsWith("/friends/requests")) throw new Error("请先打开 Facebook 好友请求页面");
+    await sleep(1500);
+    ensureUnblocked();
+    let modal = findModal();
+    if (!modal) {
+      const entry = await waitFor(() => {
+        const entries = buttons(document).filter(node => enabled(node) && matches(node, sentWords));
+        return entries.length === 1 ? entries[0] : null;
+      });
+      if (!entry) throw new Error(ui.describe("查看已发送请求"));
+      ensureUnblocked();
+      entry.click();
+      modal = await waitFor(findModal);
+    }
+    if (!modal) throw new Error(ui.describe("已发送请求窗口"));
+    let scroll = scrollContainer(modal);
+    scroll.scrollTop = 0;
+    await sleep(300);
+    let failures = 0, idle = 0, scrolls = 0;
+    for (;;) {
+      ensureUnblocked();
+      if (modal.isConnected === false || !visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
+      scroll = scrollContainer(modal);
+      const button = buttons(modal).find(node => enabled(node) &&
+        matches(node, cancelWords) && !wasAttempted(node, modal));
+      if (button) {
+        button.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "instant"});
+        await sleep(150);
+        ensureUnblocked();
+        // Scrolling can rerender a virtual list. Never click a stale or changed control.
+        if (!enabled(button) || !matches(button, cancelWords)) continue;
+        const key = profileKey(button, modal);
+        if (wasAttempted(button, modal)) continue;
+        attemptedNodes.set(button, key);
+        if (key) attemptedProfiles.add(key);
+        attempted++;
+        show("正在取消好友请求：" + summary());
+        const previousDialogs = new Set(dialogs());
+        button.click();
+        let confirmationClicked = false;
+        let replacedAt = null;
+        const position = scroll.scrollTop;
+        const changed = await waitFor(() => {
+          // Some layouts ask for confirmation. Only the explicit request-cancellation action is allowed.
+          const confirmations = dialogs().filter(node => !previousDialogs.has(node))
+            .flatMap(node => buttons(node)).filter(node => enabled(node) && matches(node, cancelWords));
+          if (confirmations.length === 1 && !confirmationClicked) {
+            ensureUnblocked();
+            confirmations[0].click();
+            confirmationClicked = true;
+            return false;
+          }
+          if (button.isConnected === false || !document.body.contains(button)) return true;
+          if (profileKey(button, modal) !== key || !visible(button)) {
+            const stillListed = key && buttons(modal).some(node =>
+              visible(node) && matches(node, cancelWords) && profileKey(node, modal) === key);
+            if (!key || stillListed || !visible(modal) || scroll.scrollTop !== position) { replacedAt = null; return false; }
+            // A stable replacement in the same viewport can reuse the same DOM button.
+            replacedAt ??= Date.now();
+            return Date.now() - replacedAt >= 600;
+          }
+          return !matches(button, cancelWords);
+        }, 4500);
+        if (changed) { confirmed++; failures = 0; }
+        else if (++failures >= 2) throw new Error("连续两次未确认取消结果，已停止，请检查页面");
+        idle = 0;
+        await sleep(2000 + Math.floor(Math.random() * 1500));
+        continue;
+      }
+      if (idle >= 5) return result(summary() + (attempted > confirmed ? "；仍有结果未确认，请人工核对，不会重复点击" :
+        attempted ? "；当前列表处理完毕" : "；当前列表没有可识别的可用取消按钮"));
+      if (++scrolls > 100) return result(summary() + "；已达到本次滚动上限，可检查后再次运行");
+      show("正在加载已发送请求：" + summary());
+      // Process each rendered viewport before moving. Loading everything first loses virtualized rows.
+      const step = Math.max(100, (scroll.clientHeight || 600) * 0.75);
+      const previousTop = scroll.scrollTop, previousHeight = scroll.scrollHeight;
+      scroll.scrollTop += step;
+      await sleep(1000);
+      idle = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight ? idle + 1 : 0;
+    }
+  }
+  return auto().catch(error => {
+    if (error.name === "AbortError") return result(summary() + "；任务已停止");
+    return result(summary() + "；" + error.message, error.message);
+  }).finally(() => ctrl.stop());
 })();

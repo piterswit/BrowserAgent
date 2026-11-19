@@ -66,6 +66,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tools/check_cover_browser.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/check_cancel_requests_browser.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build EXE
         shell: powershell

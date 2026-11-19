@@ -591,6 +591,25 @@ test("a late injection failure cannot replace a newer task's status", async () =
   assert.equal(b.messages.at(-1).status, "auto_custom");
   assert.equal(vm.runInContext("activeRun.mode", b.context), "custom");
 });
+
+for (const error of ["", "页面出现限制"]) {
+  test("friend-request completion forwards counts and " + (error ? "failure" : "success") + " detail", async () => {
+    const b = background(); await flush();
+    vm.runInContext("initializeAccount = async () => {}; navigateActivity = async () => {}", b.context);
+    b.openConnection();
+    const execute = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => options.files?.includes("cancel_friend_requests.js") ?
+      [{result: {error, detail: "已尝试 3 个，界面确认取消 2 个"}}] : execute(options);
+    await vm.runInContext("handleAction({action:'cancel_friend_requests'})", b.context);
+    if (error) {
+      assert.equal(b.messages.at(-1).status, "activity_error");
+      assert.match(b.messages.at(-1).error, /确认取消 2 个/);
+    } else {
+      assert.equal(b.messages.at(-2).status, "stop");
+      assert.match(b.messages.at(-1).detail, /确认取消 2 个/);
+    }
+  });
+}
 test("desktop activity requests enable background execution without activating a window", async () => {
   const b = background(); await flush();
   await vm.runInContext("startActivity('home')", b.context);
