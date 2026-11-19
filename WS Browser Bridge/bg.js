@@ -57,6 +57,18 @@ const taskTabs = new Set();
 let taskTabCleanup = Promise.resolve();
 let avatarOperation = null;
 let postOperation = null;
+const normalizeTaskSettings = value => ({
+  activity_minutes: Number.isInteger(value?.activity_minutes) && value.activity_minutes >= 1 && value.activity_minutes <= 1440 ? value.activity_minutes : 5,
+  cancel_request_limit: Number.isInteger(value?.cancel_request_limit) && value.cancel_request_limit >= 1 && value.cancel_request_limit <= 1000 ? value.cancel_request_limit : 100,
+});
+let taskSettings = normalizeTaskSettings(null);
+const settingsReady = chrome.storage.session.get("taskSettings").then(data => {
+  taskSettings = normalizeTaskSettings(data.taskSettings);
+}).catch(() => {});
+async function updateTaskSettings(value) {
+  taskSettings = normalizeTaskSettings(value);
+  await chrome.storage.session.set({taskSettings}).catch(() => {});
+}
 
 async function focusWindow(windowId) {
   const window = await chrome.windows.get(windowId);
@@ -837,10 +849,13 @@ function isReelsUrl(url) {
 
 async function startActivity(mode, requestedTab = null, automatic = false) {
   requireAvailableBrowser();
-  await suppressionReady;
+  const requestedEpoch = activityEpoch;
+  await Promise.all([suppressionReady, settingsReady]);
+  if (activityEpoch !== requestedEpoch) return;
   requireAvailableBrowser();
   if (automatic && (autoSuppressed || activeRun)) return;
   const epoch = nextEpoch();
+  const minutes = taskSettings.activity_minutes;
   activeRun = null;
   if (!automatic) {
     autoSuppressed = false;
@@ -866,7 +881,8 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
   }
   if (activityEpoch !== epoch) return;
   const runId = crypto.randomUUID();
-  activeRun = {runId, tabId: tab.id, epoch, mode, stats: normalizeActivityStats(null)};
+  activeRun = {runId, tabId: tab.id, epoch, mode, durationMinutes: minutes,
+    deadline: Date.now() + minutes * 60000, stats: normalizeActivityStats(null)};
   try { await injectActivity(tab.id, mode, runId, epoch); }
   catch (error) {
     if (activityEpoch !== epoch) return;
@@ -877,6 +893,10 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
 
 async function injectActivity(tabId, mode, runId, epoch) {
   if (activityEpoch !== epoch) return;
+  if (activeRun?.runId === runId && Date.now() >= activeRun.deadline) {
+    await stopActivity();
+    return;
+  }
   await chrome.scripting.executeScript({
     target: {tabId},
     func: (token, request) => {
@@ -886,6 +906,8 @@ async function injectActivity(tabId, mode, runId, epoch) {
       window.__fbActivityLastError = null;
     },
     args: [epoch, {runId, mode, background: true,
+      durationMinutes: activeRun?.runId === runId ? activeRun.durationMinutes : taskSettings.activity_minutes,
+      deadline: activeRun?.runId === runId ? activeRun.deadline : undefined,
       stats: activeRun?.runId === runId ? activeRun.stats : normalizeActivityStats(null)}]
   });
   if (activityEpoch !== epoch) return;
@@ -901,6 +923,7 @@ async function injectActivity(tabId, mode, runId, epoch) {
         detail: ctrl?.detail || window.__fbActivityLastError};
     }});
   if (activityEpoch !== epoch) return;
+  if (activeRun?.runId !== runId) return;
   if (!started?.result?.running || started.result.runId !== runId) {
     throw new Error(started?.result?.detail || "活跃脚本未启动，请重新加载插件后再试");
   }
@@ -911,6 +934,11 @@ async function injectActivity(tabId, mode, runId, epoch) {
 
 async function openAndInject(url, file) {
   requireAvailableBrowser();
+  const requestedEpoch = activityEpoch;
+  await settingsReady;
+  if (activityEpoch !== requestedEpoch) return;
+  requireAvailableBrowser();
+  const limit = taskSettings.cancel_request_limit;
   const epoch = nextEpoch();
   activeRun = null;
   autoSuppressed = true;
@@ -924,6 +952,9 @@ async function openAndInject(url, file) {
   safeSend({type: "status", status: "cancel_friend_requests"});
   let outcome;
   try {
+    await chrome.scripting.executeScript({target: {tabId: tab.id},
+      func: options => { window.__fbCancelRequestOptions = options; }, args: [{limit}]});
+    if (activityEpoch !== epoch) return;
     const results = await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["fb_ui.js", file]});
     outcome = results[0]?.result;
   }
@@ -943,6 +974,14 @@ function reportError(error) {
 }
 async function handleAction(msg) {
   if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
+  const requestedEpoch = activityEpoch;
+  if (["update_task_settings", "scroll30", "auto_group", "auto_reels", "auto_custom", "cancel_friend_requests"].includes(msg.action) &&
+      msg.settings && typeof msg.settings === "object") {
+    await settingsReady;
+    await updateTaskSettings(msg.settings);
+    if (msg.action !== "update_task_settings" && activityEpoch !== requestedEpoch) return;
+  }
+  if (msg.action === "update_task_settings") return;
   if (msg.action === "locate_browser") return locateBrowser().catch(error => console.warn("定位浏览器失败", error.message));
   if (msg.action === "stop_scroll") return stopActivity();
   if (msg.action === "scroll30") return startActivity("home");

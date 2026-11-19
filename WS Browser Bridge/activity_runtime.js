@@ -1,7 +1,7 @@
 (() => {
   const ui = window.__fbUI;
   if (!ui) throw new Error("页面识别组件未加载，请重新加载插件");
-  const version = 14;
+  const version = 15;
   if (window.__fbActivityRuntime?.version === version) return;
   const request = window.__fbActivityRequest;
   window.__fbActivityRuntime?.stop();
@@ -62,10 +62,13 @@
       const listeners = [];
       const dismissals = new WeakMap();
       const path = location.pathname;
+      const minutes = Number.isInteger(request.durationMinutes) && request.durationMinutes >= 1 && request.durationMinutes <= 1440 ? request.durationMinutes : 5;
+      const deadline = Number.isSafeInteger(request.deadline) && request.deadline > 0 && request.deadline <= Date.now() + 1440 * 60000 ?
+        request.deadline : Date.now() + minutes * 60000;
       const ctrl = {
         run: true, started: false, runId: request.runId, mode, background: request.background === true,
         unattended: mode === "home", lastInput: 0, state: "启动中", detail: "",
-        deadline: mode === "reels" ? null : Date.now() + 5 * 60 * 1000,
+        deadline,
         interactionScopes: new Set(),
         commentNavigation: null,
         sessionActive() {
@@ -268,7 +271,7 @@
         window.addEventListener(name, listener, {capture: true, passive: true});
         listeners.push([name, listener]);
       }
-      if (mode !== "reels") ctrl.expiration = setTimeout(() => ctrl.stop(true), 5 * 60 * 1000);
+      ctrl.expiration = setTimeout(() => ctrl.stop(true), Math.max(0, deadline - Date.now()));
       window.__fbActivityCtrl = ctrl;
       window[mode === "reels" ? "__reelCtrl" : "__hsCtrl"] = ctrl;
       // Reels must identify its player dialog before generic popup handling starts.

@@ -10,6 +10,8 @@
   const blockWords = ui.pattern("blocked", null, {contains: true});
   const securityWords = ui.pattern("security", null, {contains: true});
   const attemptedNodes = new WeakMap(), attemptedProfiles = new Set();
+  const requestedLimit = window.__fbCancelRequestOptions?.limit;
+  const limit = Number.isInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 1000 ? requestedLimit : 100;
   let attempted = 0, confirmed = 0, progress;
   const ctrl = {
     run: true,
@@ -146,15 +148,27 @@
     }
     if (!modal) throw new Error(ui.describe("已发送请求窗口"));
     let scroll = scrollContainer(modal);
-    scroll.scrollTop = 0;
-    await sleep(300);
+    let bottomStable = 0;
+    for (let loading = 0; bottomStable < 5; loading++) {
+      ensureUnblocked();
+      if (!visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
+      if (loading >= 100) throw new Error("未能确认列表底部，已停止，请检查页面加载状态");
+      scroll = scrollContainer(modal);
+      show("正在滚动到已发送请求底部…");
+      const previousTop = scroll.scrollTop, previousHeight = scroll.scrollHeight;
+      scroll.scrollTop = scroll.scrollHeight;
+      await sleep(1000);
+      bottomStable = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight ? bottomStable + 1 : 0;
+    }
     let failures = 0, idle = 0, scrolls = 0;
     for (;;) {
       ensureUnblocked();
+      if (attempted >= limit) return result(summary() + "；已达到本次取消上限 " + limit + " 个");
       if (modal.isConnected === false || !visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
       scroll = scrollContainer(modal);
-      const button = buttons(modal).find(node => enabled(node) &&
-        matches(node, cancelWords) && !wasAttempted(node, modal));
+      const button = buttons(modal).filter(node => enabled(node) &&
+        matches(node, cancelWords) && !wasAttempted(node, modal)).reverse()
+        .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
       if (button) {
         button.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "instant"});
         await sleep(150);
@@ -168,6 +182,7 @@
         attempted++;
         show("正在取消好友请求：" + summary());
         const previousDialogs = new Set(dialogs());
+        const previousHeight = scroll.scrollHeight;
         button.click();
         let confirmationClicked = false;
         let replacedAt = null;
@@ -186,7 +201,8 @@
           if (profileKey(button, modal) !== key || !visible(button)) {
             const stillListed = key && buttons(modal).some(node =>
               visible(node) && matches(node, cancelWords) && profileKey(node, modal) === key);
-            if (!key || stillListed || !visible(modal) || scroll.scrollTop !== position) { replacedAt = null; return false; }
+            if (!key || stillListed || !visible(modal) ||
+                (scroll.scrollTop !== position && scroll.scrollHeight >= previousHeight)) { replacedAt = null; return false; }
             // A stable replacement in the same viewport can reuse the same DOM button.
             replacedAt ??= Date.now();
             return Date.now() - replacedAt >= 600;
@@ -196,6 +212,7 @@
         if (changed) { confirmed++; failures = 0; }
         else if (++failures >= 2) throw new Error("连续两次未确认取消结果，已停止，请检查页面");
         idle = 0;
+        if (attempted >= limit) continue;
         await sleep(2000 + Math.floor(Math.random() * 1500));
         continue;
       }
@@ -203,10 +220,10 @@
         attempted ? "；当前列表处理完毕" : "；当前列表没有可识别的可用取消按钮"));
       if (++scrolls > 100) return result(summary() + "；已达到本次滚动上限，可检查后再次运行");
       show("正在加载已发送请求：" + summary());
-      // Process each rendered viewport before moving. Loading everything first loses virtualized rows.
+      // Requery each viewport while moving upward; virtualized rows are never cached for clicking.
       const step = Math.max(100, (scroll.clientHeight || 600) * 0.75);
       const previousTop = scroll.scrollTop, previousHeight = scroll.scrollHeight;
-      scroll.scrollTop += step;
+      scroll.scrollTop = Math.max(0, scroll.scrollTop - step);
       await sleep(1000);
       idle = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight ? idle + 1 : 0;
     }

@@ -131,7 +131,7 @@ class AvatarServerTest(unittest.TestCase):
         self.assertFalse(self.states)
         self.app.avatar_pending.clear()
         asyncio.run(self.app.send(8765, "a", {"action": "scroll30"}))
-        self.assertEqual(sent, [{"action": "scroll30"}])
+        self.assertEqual(sent, [{"action": "scroll30", "settings": {"activity_minutes": 5, "cancel_request_limit": 100}}])
 
     def test_busy_account_stop_button_keeps_avatar_state(self):
         self.app.avatar_pending = {"a", "b"}
@@ -346,6 +346,9 @@ class AvatarServerTest(unittest.TestCase):
                 async with websockets.connect(f"ws://127.0.0.1:{port}") as socket:
                     await socket.send(json.dumps({"type": "init", "client_id": "a", "fb_name": "Alice"}))
                     await asyncio.wait_for(ready.wait(), 2)
+                    settings_message = json.loads(await asyncio.wait_for(socket.recv(), 2))
+                    self.assertEqual(settings_message["action"], "update_task_settings")
+                    self.assertEqual(settings_message["settings"], {"activity_minutes": 5, "cancel_request_limit": 100})
                     self.assertIn("a", self.app.clients)
                 for _ in range(100):
                     if "a" not in self.app.clients:

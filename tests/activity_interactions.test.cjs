@@ -63,7 +63,7 @@ function setup(kind, mode = "home") {
   anchor.href = kind === "join" ? "https://www.facebook.com/groups/testgroup/" : "https://www.facebook.com/alice/posts/123";
   const button = article.add(new Node("button", {like: "Like", comment: "Comment", share: "Share", join: "Join group"}[kind]));
   const window = {__fbActivityRequest: {mode, runId: "run-1"}, addEventListener() {}, removeEventListener() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})};
-  const context = vm.createContext({...clock, Date: {now: () => now}, Math: {random: () => 0, floor: Math.floor},
+  const context = vm.createContext({...clock, Date: {now: () => now}, Math: {random: () => 0, floor: Math.floor, max: Math.max},
     window, document, location: {pathname: "/", href: "https://www.facebook.com/"}, innerHeight: 700, innerWidth: 1000, URL,
     getComputedStyle: node => ({position: node.style?.position || "fixed", overflowY: node.scrollable ? "auto" : "visible"}),
     Event: class { constructor(type) { this.type = type; } },

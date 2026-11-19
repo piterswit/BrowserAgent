@@ -136,7 +136,7 @@ def main():
                     action_buttons += 1
                 if isinstance(widget, server.ttk.Label) and str(widget.cget("style")) == "Muted.TLabel":
                     muted_labels += 1
-            assert action_buttons == 5 and muted_labels == 2, styles
+            assert action_buttons == 4 and muted_labels == 2, styles
             check_caption(root, theme)
         assert app.theme_timer is not None
         app.remove_client("preview-1")

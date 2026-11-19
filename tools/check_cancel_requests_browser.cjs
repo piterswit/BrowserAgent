@@ -17,7 +17,7 @@ function setup(options) {
   window.clicked = [];
   window.wrongClicks = 0;
   document.querySelector("#wrong").onclick = () => window.wrongClicks++;
-  let requests = Array.from({length: options.virtual ? 12 : 2}, (_, id) => id);
+  let requests = Array.from({length: options.count || (options.virtual ? 12 : 2)}, (_, id) => id);
   const makeModal = () => {
     const modal = document.createElement("section");
     modal.setAttribute("role", "dialog");
@@ -112,6 +112,7 @@ async function scenario(port, options) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     await evaluate("(" + setup + ")(" + JSON.stringify(options) + ")");
+    await evaluate("window.__fbCancelRequestOptions = " + JSON.stringify({limit: options.limit}));
     const result = await evaluate(source);
     const clicked = await evaluate("window.clicked");
     assert.equal(await evaluate("window.wrongClicks"), 0, "unrelated Cancel and out-of-dialog actions must remain untouched");
@@ -123,7 +124,10 @@ async function scenario(port, options) {
       assert.ok(result.error);
     } else {
       assert.equal(result.error, "", result.detail);
-      assert.equal(clicked.length, (options.virtual ? 12 : 2) - (options.disabledPrefix || 0), result.detail);
+      const limit = Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 1000 ? options.limit : 100;
+      const expected = Array.from({length: options.count || (options.virtual ? 12 : 2)}, (_, id) => id)
+        .filter(id => id >= (options.disabledPrefix || 0)).reverse().slice(0, limit);
+      assert.deepEqual(clicked, expected, "must process from the bottom and respect the per-run cap: " + result.detail);
       assert.equal(result.confirmed, clicked.length, result.detail);
     }
     if (options.blockAfterClick) assert.ok(result.error);
@@ -137,6 +141,7 @@ async function scenario(port, options) {
 
 withBrowser(async port => {
   for (const options of [{}, {genericAria: true}, {virtual: true}, {virtual: true, recycled: true},
+    {virtual: true, limit: 3}, {virtual: true, recycled: true, limit: 5}, {virtual: true, count: 110},
     {virtual: true, disabledPrefix: 9}, {alreadyOpen: true}, {delayed: true}, {confirm: true},
     {confirm: true, nestedConfirm: true}, {noResponse: true}, {stop: true}, {blockAfterClick: true},
     {labels: {sent: "查看已发送的请求", cancel: "取消请求"}},

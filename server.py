@@ -22,6 +22,7 @@ from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
 from single_instance import SingleInstance
 from post_manager import PostManager, post_widget, available_images, shuffled_cycles
+from settings_dialog import SettingsDialog
 
 APP_VERSION = "0.8.1"
 PORT_RANGE = range(8765, 8770)
@@ -75,6 +76,7 @@ class App:
         self.cover_pending = {}
         self.post_pending = {}
         self.post_manager = None
+        self.settings_window = None
         self.configuration = load_configuration()
         self.bridge_key = None
         try:
@@ -104,6 +106,9 @@ class App:
         self.current_theme = theme
         self.apply_theme_styles()
         self.apply_titlebar_theme()
+        settings_window = getattr(self, "settings_window", None)
+        if settings_window is not None and settings_window.winfo_exists():
+            self.apply_titlebar_theme(settings_window)
         post_manager = getattr(self, "post_manager", None)
         if post_manager is not None and post_manager.winfo_exists():
             self.apply_titlebar_theme(post_manager)
@@ -202,6 +207,8 @@ class App:
         self.account_summary = tk.StringVar(value="已连接 0  ·  已选中 0")
         post_widget(ttk.Button, header, "PostPrimary.TButton", text="批量发帖",
                     command=self.open_post_manager, padding=(14, 8)).pack(side="right")
+        post_widget(ttk.Button, header, "Post.TButton", text="设置",
+                    command=self.open_settings, padding=(10, 8)).pack(side="right", padx=(0, 8))
         self.themed_widget(tb.Label(header, textvariable=self.account_summary), "Muted.TLabel").pack(side="right", padx=(0, 16))
         tb.Separator(frm).pack(fill="x")
 
@@ -469,6 +476,7 @@ class App:
                     identity_error = str(data.get("identity_error") or "")[:200]
                     avatar_data = data.get("avatar_data")
                     self.root.after(0, lambda c=client_id, n=name, f=display_id, e=identity_error, a=avatar_data: self.register_client_ui(c, n, f, e, a))
+                    await self.send_task_settings(ws)
                     print("Browser connected")
                     if identity_error:
                         print("Account identity unavailable")
@@ -647,6 +655,42 @@ class App:
             self.list_view.set(client_id, "detail", detail or state)
             self.list_view.item(client_id, tags=("success" if success and confirmed else "" if success else "error",))
 
+    def get_task_settings(self):
+        from task_settings import normalize_task_settings
+        return normalize_task_settings(getattr(self, "configuration", {}).get("task_settings"))
+
+    def open_settings(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_set()
+            return
+        self.settings_window = SettingsDialog(self)
+
+    def save_task_settings(self, settings):
+        from task_settings import validate_task_settings
+        settings = validate_task_settings(settings)
+        previous = self.configuration.get("task_settings")
+        self.configuration["task_settings"] = settings
+        if not self.persist_configuration():
+            if previous is None:
+                self.configuration.pop("task_settings", None)
+            else:
+                self.configuration["task_settings"] = previous
+            return False
+        asyncio.run_coroutine_threadsafe(self.broadcast_task_settings(), self.loop)
+        return True
+
+    async def send_task_settings(self, ws):
+        try:
+            await ws.send(json.dumps({"action": "update_task_settings", "settings": self.get_task_settings()}))
+        except Exception:
+            # Commands also carry a settings snapshot, so reconnects cannot start with stale values.
+            return False
+        return True
+
+    async def broadcast_task_settings(self):
+        await asyncio.gather(*(self.send_task_settings(ws) for ws in list(self.clients.values())))
+
     def open_post_manager(self):
         if self.post_manager is not None and self.post_manager.winfo_exists():
             self.post_manager.lift()
@@ -779,6 +823,8 @@ class App:
         ws = self.clients.get(client_id)
         if ws:
             try:
+                if data.get("action") in {"scroll30", "auto_reels", "auto_group", "auto_custom", "cancel_friend_requests"}:
+                    data = {**data, "settings": self.get_task_settings()}
                 await ws.send(json.dumps(data))
             except Exception as error:
                 if data.get("action") != "locate_browser":

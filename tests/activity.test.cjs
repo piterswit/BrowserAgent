@@ -26,10 +26,10 @@ function timers() {
     }
   };
 }
-function page(mode = "home", background = false) {
+function page(mode = "home", background = false, options = {}) {
   const clock = timers(), listeners = new Map(), moves = [], messages = [];
   const window = {
-    __fbActivityRequest: {mode, runId: "run-1", background},
+    __fbActivityRequest: {mode, runId: "run-1", background, ...options},
     addEventListener(name, fn) { listeners.set(name, fn); },
     removeEventListener(name, fn) { if (listeners.get(name) === fn) listeners.delete(name); },
     scrollBy(value) { moves.push(value.top); }
@@ -354,7 +354,7 @@ test("manual navigation ends the current browsing session", async () => {
   assert.equal(p.clock.jobs.size, 0);
   assert.equal(p.messages[0].runId, "run-1");
 });
-for (const mode of ["home", "group", "custom"]) {
+for (const mode of ["home", "group", "custom", "reels"]) {
   test(`${mode} always expires after five minutes`, async () => {
     const p = page(mode); p.inject(); await p.clock.advance(300001);
     assert.equal(p.window.__fbActivityCtrl, null);
@@ -362,8 +362,8 @@ for (const mode of ["home", "group", "custom"]) {
     assert.equal(p.clock.jobs.size, 0);
   });
 }
-test("Reels continues beyond five minutes and across reel address changes", async () => {
-  const p = page("reels"); p.context.location.pathname = "/reel/123"; p.inject();
+test("Reels configured for eight minutes continues beyond five minutes and across reel address changes", async () => {
+  const p = page("reels", false, {durationMinutes: 8}); p.context.location.pathname = "/reel/123"; p.inject();
   await p.clock.advance(300001); const count = p.moves.length;
   assert.equal(p.window.__fbActivityCtrl.run, true);
   p.context.location.pathname = "/reel/456";
@@ -371,6 +371,36 @@ test("Reels continues beyond five minutes and across reel address changes", asyn
   assert.ok(p.moves.length > count); assert.equal(p.messages.length, 0);
   p.context.location.pathname = "/friends/";
   await p.clock.advance(40000); assert.equal(p.window.__fbActivityCtrl, null);
+});
+
+for (const mode of ["home", "group", "custom", "reels"]) {
+  for (const minutes of [1, 8]) {
+    test(`${mode}: configured ${minutes} minute duration expires once and clears all work`, async () => {
+      const p = page(mode, true, {durationMinutes: minutes}); p.document.hidden = true; p.inject();
+      await p.clock.advance(minutes * 60000 - 1);
+      assert.equal(p.window.__fbActivityCtrl.run, true);
+      await p.clock.advance(2);
+      assert.equal(p.window.__fbActivityCtrl, null);
+      assert.equal(p.messages.length, 1);
+      assert.equal(p.clock.jobs.size, 0);
+    });
+  }
+}
+
+test("absolute activity deadline survives reinjection instead of granting a fresh duration", async () => {
+  const p = page("reels", true, {durationMinutes: 8, deadline: 80000});
+  p.inject();
+  assert.equal(p.window.__fbActivityCtrl.deadline, 80000);
+  await p.clock.advance(60001);
+  assert.equal(p.window.__fbActivityCtrl, null);
+  assert.equal(p.messages.length, 1);
+});
+
+test("invalid duration defaults to five minutes", async () => {
+  const p = page("reels", false, {durationMinutes: 0}); p.inject();
+  assert.equal(p.window.__fbActivityCtrl.deadline, 320000);
+  await p.clock.advance(300001);
+  assert.equal(p.window.__fbActivityCtrl, null);
 });
 
 function reelLayout({axis = "y", buttons = [], dialog = false, random = 0.5} = {}) {
@@ -466,10 +496,11 @@ test("Reels without duration metadata still advances after a bounded reading pau
   assert.equal(p.movements.length, 2);
 });
 
-function background() {
+function background(savedSettings = null) {
   const clock = timers(), sockets = [], messages = [], updates = new Set(), removed = new Set();
   const runtimeMessages = [], alarms = [], windowRemoved = [], windowCreated = [];
-  const data = {}, injected = [], tabs = [{id: 1, url: "https://www.facebook.com/", status: "complete"}];
+  const data = savedSettings ? {taskSettings: savedSettings} : {};
+  const injected = [], tabs = [{id: 1, url: "https://www.facebook.com/", status: "complete"}];
   let normalWindows = [{id: 1}];
   let request = null;
   class Socket {
@@ -617,6 +648,71 @@ test("desktop activity requests enable background execution without activating a
   assert.equal(request.background, true);
   assert.equal(request.mode, "home");
   assert.equal(b.tabs[0].active, undefined);
+});
+
+test("settings changes persist and apply to the next run without extending the current run", async () => {
+  const b = background(); await flush();
+  await vm.runInContext("handleAction({action:'scroll30', settings:{activity_minutes:3, cancel_request_limit:7}})", b.context);
+  const run = vm.runInContext("activeRun", b.context), deadline = run.deadline;
+  assert.equal(run.durationMinutes, 3);
+  assert.equal(b.data.taskSettings.cancel_request_limit, 7);
+  await vm.runInContext("handleAction({action:'update_task_settings', settings:{activity_minutes:8, cancel_request_limit:11}})", b.context);
+  await vm.runInContext("injectActivity(activeRun.tabId, activeRun.mode, activeRun.runId, activeRun.epoch)", b.context);
+  const request = b.injected.filter(options => options.args?.[1]?.runId).at(-1).args[1];
+  assert.equal(request.durationMinutes, 3);
+  assert.equal(request.deadline, deadline);
+  await vm.runInContext("startActivity('home')", b.context);
+  assert.equal(vm.runInContext("activeRun.durationMinutes", b.context), 8);
+});
+
+test("cancellation injects a per-run limit snapshot", async () => {
+  const b = background(); await flush();
+  vm.runInContext("navigateActivity = async () => {}", b.context);
+  await vm.runInContext("handleAction({action:'cancel_friend_requests', settings:{activity_minutes:10, cancel_request_limit:9}})", b.context);
+  assert.equal(b.injected.find(options => options.args?.[0]?.limit)?.args[0].limit, 9);
+});
+
+test("a Reels reload after the deadline ends normally without starting a fresh run", async () => {
+  const b = background(); await flush();
+  vm.runInContext("initializeAccount = async () => {}", b.context);
+  b.openConnection();
+  b.tabs[0].url = "https://www.facebook.com/reel/123";
+  await vm.runInContext("handleAction({action:'auto_reels',settings:{activity_minutes:1,cancel_request_limit:100}})", b.context);
+  const run = vm.runInContext("activeRun", b.context);
+  const count = b.injected.filter(options => options.files).length;
+  await b.clock.advance(60001);
+  b.context.expiredRun = run;
+  await vm.runInContext("injectActivity(expiredRun.tabId, expiredRun.mode, expiredRun.runId, expiredRun.epoch)", b.context);
+  assert.equal(b.injected.filter(options => options.files).length, count);
+  assert.equal(vm.runInContext("activeRun", b.context), null);
+  assert.equal(b.messages.at(-1).status, "stop");
+});
+
+test("URL automatic starts use the most recently synchronized settings", async () => {
+  const b = background({activity_minutes: 17, cancel_request_limit: 3}); await flush();
+  await vm.runInContext("startActivity('home', 1, true)", b.context);
+  assert.equal(vm.runInContext("activeRun.durationMinutes", b.context), 17);
+});
+
+test("corrupt extension settings fall back to defaults", async () => {
+  const b = background({activity_minutes: -1, cancel_request_limit: 1001}); await flush();
+  await vm.runInContext("startActivity('home')", b.context);
+  assert.equal(vm.runInContext("activeRun.durationMinutes", b.context), 5);
+  assert.equal(vm.runInContext("taskSettings.cancel_request_limit", b.context), 100);
+});
+
+test("Stop during settings synchronization prevents a delayed activity start", async () => {
+  const b = background(); await flush();
+  let release;
+  const set = b.chrome.storage.session.set;
+  b.chrome.storage.session.set = value => value.taskSettings ? new Promise(resolve => { release = resolve; }) : set(value);
+  const starting = vm.runInContext("handleAction({action:'scroll30',settings:{activity_minutes:10,cancel_request_limit:100}})", b.context);
+  await flush();
+  assert.equal(typeof release, "function");
+  await vm.runInContext("stopActivity()", b.context);
+  release(); await starting;
+  assert.equal(vm.runInContext("activeRun", b.context), null);
+  assert.equal(b.injected.some(options => options.files?.includes("tools.js")), false);
 });
 
 test("failed connections retry with backoff and never create overlapping sockets", async () => {
