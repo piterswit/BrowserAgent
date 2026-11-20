@@ -15,6 +15,7 @@ function setup(options) {
   document.body.innerHTML = '<button id="entry"></button><main><button id="wrong">Cancel request</button></main>';
   document.querySelector("#entry").textContent = labels.sent;
   window.clicked = [];
+  window.startedAt = Date.now();
   window.wrongClicks = 0;
   document.querySelector("#wrong").onclick = () => window.wrongClicks++;
   let requests = Array.from({length: options.count || (options.virtual ? 12 : 2)}, (_, id) => id);
@@ -55,6 +56,7 @@ function setup(options) {
         button.setAttribute("aria-label", options.genericAria ? "Manage request for Person " + id : labels.cancel);
         button.setAttribute("aria-disabled", options.disabledPrefix && id < options.disabledPrefix ? "true" : "false");
         button.onclick = () => {
+          if (!window.clicked.length) window.firstClickAt = Date.now();
           window.clicked.push(id);
           if (options.stop) window.__fbCancelRequestsCtrl.stop();
           if (options.blockAfterClick) {
@@ -117,6 +119,12 @@ async function scenario(port, options) {
     const clicked = await evaluate("window.clicked");
     assert.equal(await evaluate("window.wrongClicks"), 0, "unrelated Cancel and out-of-dialog actions must remain untouched");
     assert.equal(new Set(clicked).size, clicked.length, "never repeat a request");
+    if (options.expectTimeLimit) {
+      const elapsed = await evaluate("window.firstClickAt - window.startedAt");
+      assert.ok(elapsed >= 30000 && elapsed < 35000, "preload must stop at its time budget: " + elapsed);
+      assert.ok(result.loaded < result.loadTarget, "large list must proceed without reaching the target or true bottom");
+      assert.equal(clicked[0], result.loaded - 1, "start with the oldest request in the sampled batch");
+    }
     if (options.stop || options.blockAfterClick) assert.equal(clicked.length, 1);
     else if (options.noResponse) {
       assert.equal(clicked.length, 2);
@@ -125,9 +133,11 @@ async function scenario(port, options) {
     } else {
       assert.equal(result.error, "", result.detail);
       const limit = Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 1000 ? options.limit : 100;
+      assert.ok(result.loaded <= Math.ceil(limit * 1.5), "never preload more than 150% of the cancellation cap");
+      if (options.expectedLoaded != null) assert.equal(result.loaded, options.expectedLoaded);
       const expected = Array.from({length: options.count || (options.virtual ? 12 : 2)}, (_, id) => id)
-        .filter(id => id >= (options.disabledPrefix || 0)).reverse().slice(0, limit);
-      assert.deepEqual(clicked, expected, "must process from the bottom and respect the per-run cap: " + result.detail);
+        .filter(id => id >= (options.disabledPrefix || 0)).slice(0, result.loaded).reverse().slice(0, limit);
+      assert.deepEqual(clicked, expected, "must process the sampled batch from the bottom without cancelling new rows: " + result.detail);
       assert.equal(result.confirmed, clicked.length, result.detail);
     }
     if (options.blockAfterClick) assert.ok(result.error);
@@ -140,14 +150,18 @@ async function scenario(port, options) {
 }
 
 withBrowser(async port => {
-  for (const options of [{}, {genericAria: true}, {virtual: true}, {virtual: true, recycled: true},
-    {virtual: true, limit: 3}, {virtual: true, recycled: true, limit: 5}, {virtual: true, count: 110},
+  const timeLimitCase = {virtual: true, count: 10000, limit: 1000, stop: true, expectTimeLimit: true};
+  const cases = [{}, {genericAria: true}, {virtual: true}, {virtual: true, recycled: true},
+    {virtual: true, limit: 3, expectedLoaded: 5}, {virtual: true, recycled: true, limit: 5, expectedLoaded: 8},
+    {count: 300, limit: 100, expectedLoaded: 150}, {virtual: true, count: 110},
+    timeLimitCase,
     {virtual: true, disabledPrefix: 9}, {alreadyOpen: true}, {delayed: true}, {confirm: true},
     {confirm: true, nestedConfirm: true}, {noResponse: true}, {stop: true}, {blockAfterClick: true},
     {labels: {sent: "查看已发送的请求", cancel: "取消请求"}},
     {labels: {sent: "查看已傳送邀請", cancel: "取消邀請"}},
     {labels: {sent: "عرض الطلبات المرسلة", cancel: "إلغاء الطلب"}},
-    {labels: {sent: "送信済みリクエストを表示", cancel: "リクエストをキャンセル"}}]) {
+    {labels: {sent: "送信済みリクエストを表示", cancel: "リクエストをキャンセル"}}];
+  for (const options of process.argv.includes("--time-limit-only") ? [timeLimitCase] : cases) {
     await scenario(port, options);
   }
 }).catch(error => { console.error(error); process.exitCode = 1; });

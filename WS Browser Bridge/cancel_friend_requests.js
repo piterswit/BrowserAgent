@@ -12,6 +12,9 @@
   const attemptedNodes = new WeakMap(), attemptedProfiles = new Set();
   const requestedLimit = window.__fbCancelRequestOptions?.limit;
   const limit = Number.isInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 1000 ? requestedLimit : 100;
+  const loadTarget = Math.ceil(limit * 1.5);
+  const loadedProfiles = new Set(), loadedNodes = new WeakSet();
+  let loaded = 0;
   let attempted = 0, confirmed = 0, progress;
   const ctrl = {
     run: true,
@@ -28,7 +31,7 @@
     }
   };
   window.__fbCancelRequestsCtrl = ctrl;
-  const result = (detail, error = "") => ({attempted, confirmed, detail, error});
+  const result = (detail, error = "") => ({attempted, confirmed, loaded, loadTarget, detail, error});
   const guard = () => {
     if (location.pathname !== taskPath) ctrl.stop();
     if (!ctrl.run) throw Object.assign(new Error("取消好友请求任务已停止"), {name: "AbortError"});
@@ -41,7 +44,7 @@
     }).then(guard);
   };
   const style = node => window.getComputedStyle?.(node) || {};
-  const visible = node => {
+  const rendered = node => {
     if (!node || node.isConnected === false) return false;
     for (let parent = node; parent; parent = parent.parentElement) {
       const css = style(parent);
@@ -50,7 +53,12 @@
           css.opacity === "0") return false;
     }
     const rect = node.getBoundingClientRect();
-    if (!(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight)) return false;
+    return rect.width > 0 && rect.height > 0;
+  };
+  const visible = node => {
+    if (!rendered(node)) return false;
+    const rect = node.getBoundingClientRect();
+    if (!(rect.bottom > 0 && rect.top < window.innerHeight)) return false;
     for (let parent = node.parentElement; parent; parent = parent.parentElement) {
       if (!/auto|scroll|hidden|clip/.test(style(parent).overflowY || "")) continue;
       const clip = parent.getBoundingClientRect();
@@ -129,7 +137,11 @@
     const key = profileKey(button, modal);
     return key ? attemptedProfiles.has(key) : attemptedNodes.has(button);
   };
-  const summary = () => "已尝试 " + attempted + " 个，界面确认取消 " + confirmed + " 个";
+  const inLoadedBatch = (button, modal) => {
+    const key = profileKey(button, modal);
+    return key ? loadedProfiles.has(key) : loadedNodes.has(button);
+  };
+  const summary = () => "预加载 " + loaded + " 个，已尝试 " + attempted + " 个，界面确认取消 " + confirmed + " 个";
   async function auto() {
     guard();
     if (!location.pathname.startsWith("/friends/requests")) throw new Error("请先打开 Facebook 好友请求页面");
@@ -148,17 +160,38 @@
     }
     if (!modal) throw new Error(ui.describe("已发送请求窗口"));
     let scroll = scrollContainer(modal);
-    let bottomStable = 0;
-    for (let loading = 0; bottomStable < 5; loading++) {
+    let stable = 0;
+    const loadDeadline = Date.now() + 30000;
+    for (let loading = 0; ; loading++) {
       ensureUnblocked();
       if (!visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
-      if (loading >= 100) throw new Error("未能确认列表底部，已停止，请检查页面加载状态");
       scroll = scrollContainer(modal);
-      show("正在滚动到已发送请求底部…");
+      const batch = buttons(modal).filter(node => rendered(node) && matches(node, cancelWords) &&
+        !node.disabled && node.getAttribute?.("aria-disabled") !== "true")
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+      const previousLoaded = loaded;
+      for (const button of batch) {
+        if (loaded >= loadTarget) break;
+        if (inLoadedBatch(button, modal)) continue;
+        const key = profileKey(button, modal);
+        if (key) loadedProfiles.add(key);
+        else loadedNodes.add(button);
+        loaded++;
+      }
+      show("正在预加载好友请求：" + loaded + "/" + loadTarget + "，随后从下往上取消");
+      if (loaded >= loadTarget || stable >= 3 || loading >= 60 || Date.now() >= loadDeadline) {
+        // Stay inside the sampled batch even if scrolling or deleting rows loads more requests.
+        const boundary = batch.filter(button => inLoadedBatch(button, modal)).at(-1);
+        boundary?.scrollIntoView?.({block: "end", inline: "nearest", behavior: "instant"});
+        await sleep(300);
+        break;
+      }
       const previousTop = scroll.scrollTop, previousHeight = scroll.scrollHeight;
-      scroll.scrollTop = scroll.scrollHeight;
-      await sleep(1000);
-      bottomStable = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight ? bottomStable + 1 : 0;
+      const step = Math.max(100, (scroll.clientHeight || 600) * 0.75);
+      scroll.scrollTop = Math.min(Math.max(0, scroll.scrollHeight - scroll.clientHeight), scroll.scrollTop + step);
+      await sleep(Math.min(750, Math.max(1, loadDeadline - Date.now())));
+      stable = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight &&
+        loaded === previousLoaded ? stable + 1 : 0;
     }
     let failures = 0, idle = 0, scrolls = 0;
     for (;;) {
@@ -167,14 +200,14 @@
       if (modal.isConnected === false || !visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
       scroll = scrollContainer(modal);
       const button = buttons(modal).filter(node => enabled(node) &&
-        matches(node, cancelWords) && !wasAttempted(node, modal)).reverse()
+        matches(node, cancelWords) && inLoadedBatch(node, modal) && !wasAttempted(node, modal)).reverse()
         .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
       if (button) {
         button.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "instant"});
         await sleep(150);
         ensureUnblocked();
         // Scrolling can rerender a virtual list. Never click a stale or changed control.
-        if (!enabled(button) || !matches(button, cancelWords)) continue;
+        if (!enabled(button) || !matches(button, cancelWords) || !inLoadedBatch(button, modal)) continue;
         const key = profileKey(button, modal);
         if (wasAttempted(button, modal)) continue;
         attemptedNodes.set(button, key);
@@ -217,7 +250,7 @@
         continue;
       }
       if (idle >= 5) return result(summary() + (attempted > confirmed ? "；仍有结果未确认，请人工核对，不会重复点击" :
-        attempted ? "；当前列表处理完毕" : "；当前列表没有可识别的可用取消按钮"));
+        attempted ? "；本次预加载范围已处理完毕" : "；本次预加载范围没有可识别的可用取消按钮"));
       if (++scrolls > 100) return result(summary() + "；已达到本次滚动上限，可检查后再次运行");
       show("正在加载已发送请求：" + summary());
       // Requery each viewport while moving upward; virtualized rows are never cached for clicking.
