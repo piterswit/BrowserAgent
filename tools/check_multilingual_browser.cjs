@@ -34,6 +34,14 @@ function setupPost(labels, hasImage, deny, options = {}) {
   document.documentElement.dir = labels.rtl ? "rtl" : "ltr";
   document.body.innerHTML = '<main><button id="composer"></button></main>';
   document.querySelector("#composer").textContent = labels.composer;
+  if (options.emptyMain) document.body.prepend(document.createElement("main"));
+  if (options.nestedControls) {
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("role", "button");
+    document.querySelector("main:has(#composer)").append(wrapper);
+    wrapper.append(document.querySelector("#composer"));
+  }
+  if (options.rejectedInput) document.execCommand = () => false;
   window.clicks = 0;
   window.uploaded = false;
   window.postResult = new Promise(resolve => { window.reportResult = resolve; });
@@ -51,6 +59,13 @@ function setupPost(labels, hasImage, deny, options = {}) {
     if (message.cmd === "fb_post_submitting") {
       if (options.cancelDuringAuth) window.__fbPostController.stop();
       if (options.editDuringAuth) document.querySelector('[role="textbox"]').textContent = "User changed this draft";
+      if (options.replaceDuringAuth) {
+        const old = document.querySelector('[role="textbox"]');
+        const replacement = old.cloneNode(true);
+        if (options.loseText) replacement.textContent = "";
+        old.replaceWith(replacement);
+      }
+      if (options.disableDuringAuth) document.querySelector("#publish").parentElement.setAttribute("aria-disabled", "true");
       if (options.removeDuringAuth) {
         for (const node of document.querySelectorAll('img, [data-remove-photo]')) node.remove();
       }
@@ -67,9 +82,21 @@ function setupPost(labels, hasImage, deny, options = {}) {
     const publish = dialog.querySelector("#publish");
     dialog.querySelector("#photo").textContent = labels.photo;
     publish.textContent = labels.publish;
+    if (options.nestedControls) {
+      const wrapper = document.createElement("div");
+      wrapper.setAttribute("role", "button");
+      publish.replaceWith(wrapper);
+      wrapper.append(publish);
+    }
     publish.disabled = hasImage;
     dialog.querySelector("#photo").onclick = () => input.click();
     input.onchange = () => {
+      if (options.replaceAfterUpload) {
+        const old = dialog.querySelector('[role="textbox"]');
+        const replacement = old.cloneNode(true);
+        if (options.loseText) replacement.textContent = "";
+        old.replaceWith(replacement);
+      }
       const image = document.createElement("img");
       image.style.cssText = "width:80px;height:80px";
       image.src = URL.createObjectURL(input.files[0]);
@@ -136,7 +163,8 @@ async function postScenario(port, labels, hasImage, deny = false, options = {}) 
     await evaluate(uiSource + "\n" + postSource);
     if (options.reinject) await evaluate(uiSource + "\n" + postSource);
     const result = await evaluate("Promise.race([window.postResult, new Promise((_, reject) => setTimeout(() => reject(new Error('Post fixture timed out')), 12000))])");
-    const expected = !deny && !options.draft && !options.cancelDuringAuth && !options.editDuringAuth && !options.removeDuringAuth;
+    const expected = !deny && !options.draft && !options.cancelDuringAuth && !options.editDuringAuth &&
+      !options.removeDuringAuth && !options.loseText && !options.rejectedInput && !options.disableDuringAuth;
     assert.equal(result.success, expected, result.detail);
     assert.equal(result.confirmed, expected, result.detail);
     assert.equal(await evaluate("window.clicks"), expected ? 1 : 0);

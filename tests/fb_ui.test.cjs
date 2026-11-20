@@ -177,3 +177,13 @@ test("reinjection is idempotent and diagnostics include the actual page language
   assert.match(detail, /vi/);
   assert.match(detail, /Nút chưa biết/);
 });
+
+test("reinjection upgrades the previous helper and recognizes Chinese composer variants", () => {
+  const {window, context} = fixture("zh-CN");
+  const old = window.__fbUI = {version: 1};
+  vm.runInContext(source, context);
+  assert.notEqual(window.__fbUI, old);
+  for (const label of ["有什么新鲜事，Sophia？", "有什麼新鮮事，Sophia？", "创建贴文"]) {
+    assert.equal(window.__fbUI.pattern("composer").test(label), true, label);
+  }
+});

@@ -1,5 +1,5 @@
 (() => {
-  const version = 1;
+  const version = 2;
   if (window.__fbUI?.version === version) return;
 
   // Facebook UI label variants are grouped by language and action.
@@ -40,7 +40,7 @@
       coverSubject: "封面照片|封面图片|封面",
       photoUpload: "上传照片|上传图片|上传封面照片",
       save: "保存|储存", saveChanges: "保存更改|保存修改|储存变更", cancel: "取消",
-      composer: "你在想什么|写点什么|分享近况|创建帖子",
+      composer: "你在想什么|在想什么|有什么新鲜事|有什么新动态|写点什么|分享近况|创建帖子|创建贴文",
       photoVideo: "照片/视频|图片/视频|照片|图片", photoRemove: "移除照片|移除图片|删除照片",
       publish: "发布|发帖|立即分享", postSubject: "帖子|贴文",
       updated: "已更新|更新成功|已保存|保存成功", published: "已发布|已分享|发布成功|分享成功",
@@ -65,7 +65,7 @@
       coverSubject: "封面相片|封面照片|封面圖片|封面",
       photoUpload: "上傳相片|上傳照片|上傳圖片|上傳封面相片",
       save: "儲存|保存", saveChanges: "儲存變更|保存更改", cancel: "取消",
-      composer: "在想些什麼|你在想什麼|建立貼文|寫點什麼",
+      composer: "在想些什麼|你在想什麼|在想什麼|有什麼新鮮事|有什麼新動態|建立貼文|撰寫貼文|寫點什麼",
       photoVideo: "相片/影片|照片/影片|相片|照片|圖片", photoRemove: "移除照片|移除相片|移除圖片|移除圖像",
       publish: "發佈|發布|發表|立即分享", postSubject: "貼文",
       updated: "已更新|已儲存|已保存|更新成功", published: "已發佈|已發布|已發表|已分享|分享成功",

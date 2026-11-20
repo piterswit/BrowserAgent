@@ -33,7 +33,7 @@
     finished = true;
     chrome.runtime.sendMessage({cmd: "fb_post_result", operationId: request.operationId, success, confirmed, submitted, detail})?.catch(() => {});
   };
-  const waitFor = async (finder, timeout = 20000) => {
+  const waitFor = async (finder, timeout = 20000, stage = "发布按钮", scope = document) => {
     const deadline = Date.now() + timeout;
     while (!stopped && Date.now() < deadline) {
       guard();
@@ -41,7 +41,7 @@
       if (result) return result;
       await sleep(150);
     }
-    throw new Error(stopped ? "发帖任务已取消" : ui.describe("发布控件"));
+    throw new Error(stopped ? "发帖任务已取消" : ui.describe(stage, typeof scope === "function" ? scope() : scope));
   };
   const click = node => {
     guard();
@@ -51,8 +51,15 @@
   };
   const controls = '[role="button"], button, label';
   const matches = (node, matcher) => ui.values(node).some(value => matcher.test(value));
-  const clickable = (scope, matcher) => ui.unique(
-    [...scope.querySelectorAll(controls)].filter(visible), matcher);
+  const matchingControls = (scope, matcher, selector = controls) => {
+    const candidates = [...scope.querySelectorAll(selector)].filter(node => visible(node) && matches(node, matcher));
+    // Nested labels/buttons represent one action; separate matching actions remain ambiguous.
+    return candidates.filter(node => !candidates.some(other => other !== node && node.contains?.(other)));
+  };
+  const clickable = (scope, matcher) => {
+    const candidates = matchingControls(scope, matcher);
+    return candidates.length === 1 ? candidates[0] : null;
+  };
   const getEditor = dialog => {
     const editors = [...dialog.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')].filter(visible);
     return editors.length === 1 ? editors[0] : null;
@@ -75,14 +82,16 @@
       const selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
-      if (!document.execCommand("insertText", false, request.text)) editor.textContent = request.text;
+      if (!document.execCommand("insertText", false, request.text)) {
+        throw new Error("Facebook 正文编辑器未接受文字输入，已停止发布，请检查页面或浏览器版本");
+      }
     } else {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set ||
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
       setter?.call(editor, request.text);
+      editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: request.text}));
+      editor.dispatchEvent(new Event("change", {bubbles: true}));
     }
-    editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: request.text}));
-    editor.dispatchEvent(new Event("change", {bubbles: true}));
   };
 
   window.__fbPostController = {operationId: request.operationId, stop: () => { stopped = true; }};
@@ -93,30 +102,36 @@
       }
       const previousDialogs = new Set([...document.querySelectorAll('[role="dialog"]')].filter(visible));
       const launch = await waitFor(() => {
-        const main = document.querySelector('[role="main"], main');
-        return main && clickable(main, words.composer);
-      });
+        const mains = [...document.querySelectorAll('[role="main"], main')].filter(visible);
+        const roots = mains.filter(node => !mains.some(other => other !== node && other.contains?.(node)));
+        const candidates = roots.flatMap(main => matchingControls(main, words.composer));
+        return candidates.length === 1 ? candidates[0] : null;
+      }, 20000, "发帖入口", () => document.querySelector('[role="main"], main') || document);
       click(launch);
       const postDialog = await waitFor(() => {
         const dialogs = [...document.querySelectorAll('[role="dialog"]')]
           .filter(node => visible(node) && !previousDialogs.has(node) && getEditor(node));
         return dialogs.length === 1 ? dialogs[0] : null;
-      });
+      }, 20000, "新建发帖窗口");
       const editor = getEditor(postDialog);
       if (getValue(editor)?.trim()) throw new Error("发布窗口已有文字，请先核对草稿");
       const imagePreview = () => clickable(postDialog, words.removeImage) ||
         [...postDialog.querySelectorAll('img[src^="blob:"]')].some(node => visible(node) && node.complete && node.naturalWidth > 0);
       if (imagePreview()) throw new Error("发布窗口已有图片，请先核对草稿");
       fill(editor);
+      await waitFor(() => {
+        const current = getEditor(postDialog);
+        return current && normalize(getValue(current)) === normalize(request.text);
+      }, 4000, "正文写入（编辑器未保留预设文案）", postDialog);
       if (request.hasImage) {
-        const photoButton = await waitFor(() => clickable(postDialog, words.photo));
+        const photoButton = await waitFor(() => clickable(postDialog, words.photo), 20000, "照片/视频入口", postDialog);
         const findInput = () => {
           const inputs = [...postDialog.querySelectorAll('input[type="file"]')]
             .filter(node => !node.disabled && /image|\.(jpg|jpeg|png|webp)/i.test(node.accept));
           return inputs.length === 1 ? inputs[0] : null;
         };
         click(photoButton);
-        const input = await waitFor(() => imagePreview() || findInput(), 25000);
+        const input = await waitFor(() => imagePreview() || findInput(), 25000, "图片上传控件", postDialog);
         if (input instanceof HTMLInputElement) {
           input.dataset.browseragentPostUpload = "true";
           try { await send("fb_post_upload"); }
@@ -128,15 +143,19 @@
       const findPublish = () => {
         if (!visible(postDialog) || (request.hasImage ? !imagePreview() : imagePreview()) ||
             [...postDialog.querySelectorAll('[role="progressbar"], [aria-busy="true"]')].some(visible)) return null;
-        const buttons = [...postDialog.querySelectorAll('[role="button"], button')].filter(node =>
-          visible(node) && matches(node, words.publish) && node.getAttribute("aria-disabled") !== "true" && !node.disabled);
+        const buttons = matchingControls(postDialog, words.publish, '[role="button"], button').filter(node =>
+          node.getAttribute("aria-disabled") !== "true" && !node.disabled &&
+          !node.closest?.('[aria-disabled="true"], [disabled]'));
         return buttons.length === 1 ? buttons[0] : null;
       };
-      await waitFor(findPublish);
+      await waitFor(findPublish, 20000, "可用的发布按钮（请检查图片是否上传完成）", postDialog);
       await send("fb_post_submitting");
       const publish = findPublish();
-      if (!publish || getEditor(postDialog) !== editor || normalize(getValue(editor)) !== normalize(request.text)) {
-        throw new Error("发布窗口或正文已变化，已停止发布");
+      if (!publish) throw new Error("发布按钮、配图或窗口状态已变化，已停止发布");
+      const currentEditor = getEditor(postDialog);
+      if (!currentEditor) throw new Error("发帖正文输入框缺失或存在多个输入框，已停止发布");
+      if (normalize(getValue(currentEditor)) !== normalize(request.text)) {
+        throw new Error(`发帖正文校验失败（预期 ${request.text.length} 字符，当前 ${(getValue(currentEditor) || "").length} 字符），已停止发布`);
       }
       const initial = new Set([...document.querySelectorAll('[role="alert"], [role="status"]')].map(node => text(node)));
       submitted = true;

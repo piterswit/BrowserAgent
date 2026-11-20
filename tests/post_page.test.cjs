@@ -21,6 +21,7 @@ function page(options = {}) {
     dispatchEvent() {}, focus() {}, click() {}});
   const editor = Object.assign(new TextArea(), node(""));
   const secondEditor = Object.assign(new TextArea(), node(""));
+  let currentEditor = editor;
   const input = Object.assign(new Input(), node(""), {accept: "image/*", dataset: {}});
   const remove = node("Remove photo");
   const publish = Object.assign(node("Post"), {disabled: !!options.disabled});
@@ -28,15 +29,18 @@ function page(options = {}) {
     if (options.chooser) preview = true;
   }});
   const dialog = Object.assign(node("Create post"), {querySelectorAll(selector) {
-    if (selector.includes("contenteditable")) return options.multipleEditors ? [editor, secondEditor] : [editor];
+    if (selector.includes("contenteditable")) return options.multipleEditors ? [currentEditor, secondEditor] : [currentEditor];
     if (selector.includes('input[type="file"]')) return [input];
     if (selector.includes("img[")) return [];
     if (selector.includes("progressbar")) return options.busy ? [node("")] : [];
     if (selector === '[role="button"], button') return options.multiplePublish ? [publish, publish] : [publish];
     return [photo, publish, ...(preview ? [remove] : [])];
   }});
-  const launch = Object.assign(node("Create post"), {click() { open = true; }});
-  const main = {querySelectorAll: () => options.multipleLaunch ? [launch, launch] : [launch]};
+  const launch = Object.assign(node(options.composer || "Create post"), {click() { open = true; }});
+  const launchParent = Object.assign(node(options.composer || "Create post"), {contains: other => other === launch});
+  const main = Object.assign(node(""), {querySelectorAll: () => options.multipleLaunch ? [launch, launch] :
+    options.nestedLaunch ? [launchParent, launch] : [launch]});
+  const emptyMain = Object.assign(node(""), {querySelectorAll: () => []});
   const notice = node(options.notice || "Your post has been published");
   publish.click = () => { published++; if (!options.keepOpen) dialog.isConnected = false; };
   const window = {__fbPostRequest: {operationId: "post-1", text: "Hello from a test", hasImage: !!options.image}};
@@ -48,6 +52,7 @@ function page(options = {}) {
     getComputedStyle: () => ({visibility: "visible", display: "block"}),
     location: {hostname: "www.facebook.com", pathname: "/me"},
     document: {querySelector: () => main, querySelectorAll: selector => {
+      if (selector === '[role="main"], main') return options.multipleMains ? [emptyMain, main] : [main];
       if (selector === '[role="dialog"]') return open ? options.multipleDialogs ? [dialog, dialog] : [dialog] : [];
       if (selector.includes('[role="alert"]')) return published || options.staleNotice ? [notice] : [];
       return [];
@@ -58,12 +63,20 @@ function page(options = {}) {
       if (message.cmd === "fb_post_upload") {
         if (options.uploadDenied) return {accepted: false};
         preview = !options.noPreview;
+        if (options.replaceAfterUpload) {
+          secondEditor.value = options.loseText ? "" : editor.value;
+          currentEditor = secondEditor;
+        }
       }
       if (message.cmd === "fb_post_submitting") {
         if (options.cancel) window.__fbPostController.stop();
         if (options.editDuringAuth) editor.value = "Changed by user";
         if (options.imageDuringAuth) preview = !preview;
         if (options.replaceEditor) options.multipleEditors = true;
+        if (options.replaceDuringAuth) {
+          secondEditor.value = options.loseText ? "" : editor.value;
+          currentEditor = secondEditor;
+        }
         if (options.loginDuringAuth) context.location.pathname = "/login";
       }
       return {accepted: !options.denied};
@@ -75,7 +88,10 @@ function page(options = {}) {
   return {result, window, messages, input, published: () => published, editor};
 }
 
-for (const options of [{}, {image: true}, {image: true, chooser: true}, {reinject: true}]) {
+for (const options of [{}, {image: true}, {image: true, chooser: true}, {reinject: true},
+  {composer: "有什么新鲜事，Sophia？"}, {composer: "有什麼新鮮事，Sophia？"},
+  {multipleMains: true}, {nestedLaunch: true}, {image: true, replaceAfterUpload: true},
+  {replaceDuringAuth: true}]) {
   test("post succeeds exactly once " + JSON.stringify(options), async () => {
     const p = page(options), result = await p.result;
     assert.equal(result.success, true, result.detail);
@@ -93,6 +109,7 @@ for (const options of [
   {image: true, noPreview: true}, {denied: true}, {cancel: true},
   {editDuringAuth: true}, {image: true, imageDuringAuth: true},
   {imageDuringAuth: true}, {replaceEditor: true}, {loginDuringAuth: true},
+  {image: true, replaceAfterUpload: true, loseText: true}, {replaceDuringAuth: true, loseText: true},
 ]) {
   test("unsafe post never clicks Publish " + JSON.stringify(options), async () => {
     const p = page(options), result = await p.result;
@@ -104,6 +121,12 @@ for (const options of [
     if (options.draft) assert.equal(p.editor.value, options.draft);
   });
 }
+
+test("timeout diagnostics name the failed step instead of unrelated navigation", async () => {
+  const result = await page({composer: "Unrecognized composer"}).result;
+  assert.match(result.detail, /发帖入口/);
+  assert.match(result.detail, /Unrecognized composer/);
+});
 
 for (const options of [{notice: "Post has not been published"}, {staleNotice: true}, {notice: "Uploading post"}]) {
   test("unconfirmed submissions are never retried " + JSON.stringify(options), async () => {
