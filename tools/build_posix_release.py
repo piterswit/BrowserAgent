@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from check_release import release_version
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +17,7 @@ def main():
     args = parser.parse_args()
     if sys.platform not in {"darwin", "linux"}:
         parser.error("Run this builder on macOS or Linux")
-    args.tag = args.tag or "v" + json.loads((ROOT / "WS Browser Bridge/manifest.json").read_text())["version"]
+    args.tag = args.tag or "v" + release_version(json.loads((ROOT / "WS Browser Bridge/manifest.json").read_text()))
     subprocess.run([sys.executable, str(ROOT / "tools/check_release.py"), "--tag", args.tag], check=True)
     target = ROOT / "release" / ("FB_Auto_Active_" + args.tag + "_" + sys.platform + "_" + platform.machine())
     if target.exists():

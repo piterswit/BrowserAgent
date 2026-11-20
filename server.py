@@ -25,7 +25,7 @@ from single_instance import SingleInstance
 from post_manager import PostManager, post_widget, available_images, shuffled_cycles
 from settings_dialog import SettingsDialog
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0-beta.1"
 PORT_RANGE = range(8765, 8770)
 
 # 防止系统进入睡眠

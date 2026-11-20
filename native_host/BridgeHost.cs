@@ -10,8 +10,9 @@ using System.Text;
 
 [assembly: AssemblyTitle("BrowserAgent Native Messaging Host")]
 [assembly: AssemblyDescription("Windowless DPAPI credential host")]
-[assembly: AssemblyVersion("0.8.1.0")]
-[assembly: AssemblyFileVersion("0.8.1.1")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.1")]
+[assembly: AssemblyInformationalVersion("0.9.0-beta.1")]
 
 [DataContract]
 internal sealed class HostRequest

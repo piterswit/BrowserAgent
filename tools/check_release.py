@@ -14,10 +14,22 @@ EXTENSION = ROOT / "WS Browser Bridge"
 GUI_ASSETS = ("bridge.ico", "bridge-128.png", "bridge-32.png", "avatar-placeholder.png")
 
 
+def release_version(manifest):
+    version = manifest["version"]
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+){0,2}", version) or any(
+        int(part) > 65535 or (len(part) > 1 and part.startswith("0")) for part in version.split(".")
+    ) or not any(int(part) for part in version.split(".")):
+        raise ValueError("Invalid extension numeric version")
+    display = manifest.get("version_name", version)
+    if display != version and not re.fullmatch(re.escape(version) + r"-(alpha|beta|rc)(\.[1-9]\d*)?", display):
+        raise ValueError("Invalid prerelease version name")
+    return display
+
+
 def check_versions(tag):
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
-    version = manifest["version"]
-    if not re.fullmatch(r"\d+\.\d+(?:\.\d+){0,2}", version) or tag != f"v{version}":
+    version = release_version(manifest)
+    if tag != f"v{version}":
         raise ValueError("Release tag must match the extension version")
     tree = ast.parse((ROOT / "server.py").read_text(encoding="utf-8"))
     app_version = next(
@@ -83,8 +95,11 @@ def check_archive(path, tag):
                or name == prefix + "FB_bridge_host.exe" for name in names):
             raise ValueError("Unexpected root or user configuration in release archive")
         manifest = json.loads(archive.read(prefix + "Browser_Extension/manifest.json"))
-        if f"v{manifest['version']}" != tag:
+        if f"v{release_version(manifest)}" != tag:
             raise ValueError("Packaged extension version differs from release tag")
+        for file in EXTENSION.rglob("*"):
+            if file.is_file() and archive.read(prefix + "Browser_Extension/" + file.relative_to(EXTENSION).as_posix()) != file.read_bytes():
+                raise ValueError(f"Packaged extension file differs from source: {file.name}")
         if archive.getinfo(prefix + "FB_server.exe").file_size == 0:
             raise ValueError("Packaged executable is empty")
         if archive.getinfo(native_host).file_size == 0:

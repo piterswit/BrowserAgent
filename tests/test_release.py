@@ -28,9 +28,10 @@ class ReleaseTests(unittest.TestCase):
         return bytes(data)
 
     def setUp(self):
-        self.tag = "v" + json.loads(
+        manifest = json.loads(
             (release.EXTENSION / "manifest.json").read_text(encoding="utf-8")
-        )["version"]
+        )
+        self.tag = "v" + release.release_version(manifest)
 
     def test_versions_match(self):
         release.check_versions(self.tag)
@@ -39,7 +40,15 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.check_versions("v999.0")
 
-    def make_archive(self, path, omit=None, extra=None, version=None):
+    def test_beta_version_keeps_chrome_numeric_version_separate(self):
+        self.assertEqual(release.release_version({"version": "0.9.0", "version_name": "0.9.0-beta.1"}), "0.9.0-beta.1")
+        self.assertEqual(release.release_version({"version": "0.9.0"}), "0.9.0")
+        for manifest in [{"version": "0.9-beta"}, {"version": "0.09.0"}, {"version": "0.9.65536"},
+                         {"version": "0.0"}, {"version": "0.9.0", "version_name": "0.8.0-beta.1"}]:
+            with self.subTest(manifest=manifest), self.assertRaises(ValueError):
+                release.release_version(manifest)
+
+    def make_archive(self, path, omit=None, extra=None, version=None, corrupt=None):
         prefix = f"FB_Auto_Active_{self.tag}/"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(prefix + "FB_server.exe", b"test executable")
@@ -53,6 +62,8 @@ class ReleaseTests(unittest.TestCase):
                 if relative == omit:
                     continue
                 data = file.read_bytes()
+                if relative == corrupt:
+                    data = b"stale extension script"
                 if relative == "manifest.json" and version:
                     manifest = json.loads(data)
                     manifest["version"] = version
@@ -66,6 +77,13 @@ class ReleaseTests(unittest.TestCase):
             path = Path(directory) / "release.zip"
             self.make_archive(path)
             release.check_archive(path, self.tag)
+
+    def test_stale_packaged_script_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_archive(path, corrupt="bg.js")
+            with self.assertRaisesRegex(ValueError, "differs from source"):
+                release.check_archive(path, self.tag)
 
     def test_console_and_python_launcher_native_images_rejected(self):
         for image in (self.native_image(subsystem=3), self.native_image(managed=False), b"invalid"):

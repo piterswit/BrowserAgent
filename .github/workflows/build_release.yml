@@ -69,48 +69,10 @@ jobs:
           node tools/check_cancel_requests_browser.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build EXE
+      - name: Build and Verify Windows Packages
         shell: powershell
         run: |
-          $iconFolder = Join-Path $env:GITHUB_WORKSPACE "WS Browser Bridge/icon"
-          python -m PyInstaller server.py `
-            --onefile `
-            --noconsole `
-            --clean `
-            --noconfirm `
-            --specpath build `
-            --icon "$iconFolder/bridge.ico" `
-            --add-data "$iconFolder;WS Browser Bridge/icon" `
-            --name "FB_server"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build Native Messaging Host
-        shell: powershell
-        run: |
-          .\tools\build_native_host.ps1 -OutputPath "dist/FB_bridge_host.exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Create Release Folder
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $releaseFolder = Join-Path "release" "FB_Auto_Active_$env:RELEASE_TAG"
-          New-Item -ItemType Directory -Path $releaseFolder -Force
-          Copy-Item -LiteralPath ".\dist\FB_server.exe" -Destination $releaseFolder
-          New-Item -ItemType Directory -Path "$releaseFolder\conf" -Force
-          Copy-Item -LiteralPath ".\dist\FB_bridge_host.exe" -Destination "$releaseFolder\conf"
-          Copy-Item -LiteralPath ".\README.md" -Destination $releaseFolder
-          Copy-Item -LiteralPath ".\WS Browser Bridge" -Destination "$releaseFolder\Browser_Extension" -Recurse
-
-      - name: Zip Release
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $zipFile = "release/FB_Auto_Active_$env:RELEASE_TAG.zip"
-          Compress-Archive `
-            -Path "release/FB_Auto_Active_$env:RELEASE_TAG" `
-            -DestinationPath $zipFile -Force
-          python tools/check_release.py --tag "$env:RELEASE_TAG" --exe "dist/FB_server.exe" --zip "$zipFile"
+          python tools/build_windows_release.py --tag "$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Generate Build Attestation
@@ -124,5 +86,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             release/FB_Auto_Active_${{ github.ref_name }}.zip
+            release/FB_Browser_Bridge_${{ github.ref_name }}.zip
+            release/SHA256SUMS_${{ github.ref_name }}.txt
