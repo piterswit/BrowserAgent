@@ -481,6 +481,12 @@ async function runAvatarChange(filePath, expectedProfile) {
   }
 }
 
+function currentPost(operation) {
+  return operation && postOperation === operation && !operation.cancelled &&
+    Date.now() < operation.expires && ws === operation.socket &&
+    operation.socket?.readyState === WebSocket.OPEN && authenticatedSockets.has(operation.socket);
+}
+
 async function runPost({task_id: taskId, text, image_path: imagePath, profile_url: profile}) {
   if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) return;
   const operationSocket = ws;
@@ -506,14 +512,18 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
   let timer;
   let outcome;
   let operation;
+  const check = () => {
+    if (!currentPost(operation)) throw new Error("发帖任务或本地连接已失效");
+  };
   try {
     const tab = await createProfileTab();
     target = {tabId: tab.id};
     operation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false, cancelled: false,
       expires: Date.now() + 110000, socket: operationSocket, profile};
     postOperation = operation;
+    check();
     await verifyAvatarAccount(tab.id, profile);
-    if (ws !== operationSocket || operationSocket?.readyState !== WebSocket.OPEN) throw new Error("本地连接已断开");
+    check();
     const completed = new Promise((resolve, reject) => {
       operation.resolve = resolve;
       operation.reject = error => { operation.cancelled = true; reject(error); };
@@ -523,27 +533,38 @@ async function runPost({task_id: taskId, text, image_path: imagePath, profile_ur
     if (imagePath) {
       await chrome.debugger.attach(target, "1.3");
       attached = true;
+      check();
       await chrome.debugger.sendCommand(target, "Page.enable");
+      check();
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", {enabled: true});
+      check();
       const upload = async node => {
+        check();
+        if (operation.submitted) throw new Error("发帖已进入提交阶段，不能再次上传图片");
         await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {...node, files: [imagePath]});
+        check();
       };
       operation.upload = () => operation.uploading ??= (async () => {
         const {root} = await chrome.debugger.sendCommand(target, "DOM.getDocument", {depth: 1});
+        check();
         const selector = 'input[type="file"][data-browseragent-post-upload="true"]';
         const {nodeId} = await chrome.debugger.sendCommand(target, "DOM.querySelector", {nodeId: root.nodeId, selector});
+        check();
         if (!nodeId) throw new Error("贴文图片控件已失效");
         await upload({nodeId});
       })();
       chooserListener = (source, method, params) => {
-        if (source.tabId !== tab.id || method !== "Page.fileChooserOpened" || !params.backendNodeId) return;
+        if (!currentPost(operation) || operation.submitted || source.tabId !== tab.id ||
+            method !== "Page.fileChooserOpened" || !params.backendNodeId) return;
         operation.uploading ??= upload({backendNodeId: params.backendNodeId});
         operation.uploading.catch(operation.reject);
       };
       chrome.debugger.onEvent.addListener(chooserListener);
     }
+    check();
     await chrome.scripting.executeScript({target, func: request => { window.__fbPostRequest = request; },
       args: [{operationId: operation.id, text: text.trim(), hasImage: !!imagePath}]});
+    check();
     await chrome.scripting.executeScript({target, files: ["fb_ui.js", "publish_post.js"]});
     const result = await completed;
     outcome = [result.success, result.confirmed, result.detail];
@@ -869,6 +890,7 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
     tab = (await chrome.tabs.query({})).find(item => isFacebook(item.url) && !taskTabs.has(item.id));
   }
   if (!tab) throw new Error("请先打开已登录的 Facebook 页面");
+  requireAvailableBrowser();
   const paths = {home: "/", group: "/groups/feed/", reels: "/reel/"};
   const matches = url => mode === "custom" || (mode === "reels" ? isReelsUrl(url) : new URL(url).pathname === paths[mode]);
   if (!automatic && !matches(tab.url)) {
@@ -880,6 +902,7 @@ async function startActivity(mode, requestedTab = null, automatic = false) {
     throw new Error("页面已被用户切换，活跃未启动");
   }
   if (activityEpoch !== epoch) return;
+  requireAvailableBrowser();
   const runId = crypto.randomUUID();
   activeRun = {runId, tabId: tab.id, epoch, mode, durationMinutes: minutes,
     deadline: Date.now() + minutes * 60000, stats: normalizeActivityStats(null)};
@@ -947,14 +970,17 @@ async function openAndInject(url, file) {
   if (activityEpoch !== epoch) return;
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   if (!tab) return;
+  requireAvailableBrowser();
   await navigateActivity(tab.id, url, epoch);
   if (activityEpoch !== epoch) return;
+  requireAvailableBrowser();
   safeSend({type: "status", status: "cancel_friend_requests"});
   let outcome;
   try {
     await chrome.scripting.executeScript({target: {tabId: tab.id},
       func: options => { window.__fbCancelRequestOptions = options; }, args: [{limit}]});
     if (activityEpoch !== epoch) return;
+    requireAvailableBrowser();
     const results = await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["fb_ui.js", file]});
     outcome = results[0]?.result;
   }
@@ -1197,7 +1223,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.cmd === "fb_post_result") {
-    if (!postOperation || postOperation.cancelled || Date.now() >= postOperation.expires ||
+    if (!currentPost(postOperation) ||
         postOperation.tabId !== sender.tab?.id || postOperation.id !== msg.operationId) {
       sendResponse({accepted: false});
       return;
@@ -1210,9 +1236,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.cmd === "fb_post_upload" || msg.cmd === "fb_post_submitting") {
     const operation = postOperation;
-    const valid = () => operation && postOperation === operation && operation.tabId === sender.tab?.id &&
-      operation.id === msg.operationId && ws === operation.socket && ws?.readyState === WebSocket.OPEN &&
-      !operation.cancelled && Date.now() < operation.expires && !operation.submitted;
+    const valid = () => currentPost(operation) && operation.tabId === sender.tab?.id &&
+      operation.id === msg.operationId && !operation.submitted;
     if (!valid()) {
       sendResponse({accepted: false, detail: "发帖任务或本地连接已失效"});
       return;

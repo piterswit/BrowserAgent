@@ -629,7 +629,11 @@ class App:
             asyncio.run_coroutine_threadsafe(self.send_cover(client_id, task_id, image, profile), self.loop)
 
     async def send_cover(self, client_id, task_id, image, profile):
+        if self.cover_pending.get(client_id) != task_id:
+            return
         try:
+            if self.accounts.get(client_id, {}).get("profile_url") != profile:
+                raise ValueError("账号已变化，请重新选择后更换封面")
             ws = self.clients.get(client_id)
             if ws is None:
                 raise ValueError("浏览器已断开连接")

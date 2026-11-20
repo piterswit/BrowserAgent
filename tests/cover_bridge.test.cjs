@@ -244,3 +244,36 @@ for (const stage of ["timeout", "cleanup"]) {
     assert.equal(vm.runInContext("postOperation", b.context), null);
   });
 }
+
+for (const stage of ["Page.enable", "DOM.getDocument", "DOM.querySelector", "chooser"]) {
+  test("cancelled post cannot continue upload or injection after " + stage, async () => {
+    const b = bridge();
+    const send = b.chrome.debugger.sendCommand;
+    let injected = false;
+    b.chrome.debugger.sendCommand = async (...args) => {
+      const result = await send(...args);
+      if (args[1] === stage) vm.runInContext("postOperation.cancelled = true", b.context);
+      return result;
+    };
+    const execute = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => {
+      if (options.files?.includes("publish_post.js")) {
+        injected = true;
+        if (stage === "chooser") {
+          vm.runInContext("postOperation.cancelled = true", b.context);
+          for (const callback of b.events) callback({tabId: 99}, "Page.fileChooserOpened", {backendNodeId: 88});
+        } else assert.equal((await b.reply("fb_post_upload")).accepted, false);
+        vm.runInContext("postOperation.reject(new Error('cancelled test'))", b.context);
+      }
+      return execute(options);
+    };
+    b.context.postRequest = {task_id: taskId, text: "Hello", image_path: "/tmp/photo.png", profile_url: profile};
+    await vm.runInContext("runPost(postRequest)", b.context);
+    assert.equal(b.commands.some(command => command.method === "DOM.setFileInputFiles"), false);
+    if (stage === "Page.enable") assert.equal(injected, false);
+    assert.equal(b.messages.at(-1).success, false);
+    assert.equal(b.detached(), 1);
+    assert.equal(b.events.size, 0);
+    assert.equal(vm.runInContext("postBusy", b.context), false);
+  });
+}

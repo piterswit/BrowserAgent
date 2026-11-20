@@ -127,6 +127,24 @@ class CoverServerTest(unittest.TestCase):
         self.assertNotIn("missing", self.app.cover_pending)
         self.assertEqual(self.states.get("missing"), "更换封面失败")
 
+    def test_expired_queued_cover_is_not_sent(self):
+        self.app.cover_pending["a"] = "new-task"
+        self.app.clients["a"] = SimpleNamespace(send=lambda _: self.fail("expired task was sent"))
+        asyncio.run(self.app.__class__.send_cover(
+            self.app, "a", "old-task", Path("D:/cover.png"), "https://www.facebook.com/a"))
+        self.assertEqual(self.app.cover_pending["a"], "new-task")
+        self.assertFalse(self.timers)
+
+    def test_account_switch_rejects_cover_before_sending(self):
+        self.app.cover_pending["a"] = "task"
+        self.app.accounts["a"]["profile_url"] = "https://www.facebook.com/changed"
+        self.app.clients["a"] = SimpleNamespace(send=lambda _: self.fail("changed account task was sent"))
+        asyncio.run(self.app.__class__.send_cover(
+            self.app, "a", "task", Path("D:/cover.png"), "https://www.facebook.com/a"))
+        self.timers[-1][1]()
+        self.assertNotIn("a", self.app.cover_pending)
+        self.assertEqual(self.states["a"], "更换封面失败")
+
 
 if __name__ == "__main__":
     unittest.main()

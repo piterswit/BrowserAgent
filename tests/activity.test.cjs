@@ -573,6 +573,21 @@ test("the avatar reservation blocks starts before asynchronous stop finishes and
   assert.equal(vm.runInContext("avatarStarting", b.context), false);
 });
 
+for (const flag of ["postBusy = true", "avatarStarting = true", "coverOperation = {} "]) {
+  test("activity preparation yields to a newly reserved task: " + flag, async () => {
+    const b = background(); await flush();
+    const get = b.chrome.tabs.get;
+    b.chrome.tabs.get = async (...args) => {
+      const tab = await get(...args);
+      vm.runInContext(flag, b.context);
+      return tab;
+    };
+    await assert.rejects(vm.runInContext("startActivity('home')", b.context), {name: "TaskBusyError"});
+    assert.equal(vm.runInContext("activeRun", b.context), null);
+    assert.equal(b.injected.some(item => item.files?.some(file => file.endsWith("_active.js"))), false);
+  });
+}
+
 test("busy rejection reports detail without replacing the avatar state with an error", async () => {
   const b = background(); await flush(); vm.runInContext("initializeAccount = async () => {}", b.context);
   b.openConnection();
