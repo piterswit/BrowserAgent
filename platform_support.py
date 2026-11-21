@@ -24,6 +24,14 @@ def font_family():
     return "Microsoft YaHei UI" if sys.platform == "win32" else "PingFang SC" if sys.platform == "darwin" else "Noto Sans CJK SC"
 
 
+def context_menu_bindings():
+    return ("<Button-2>", "<Button-3>", "<Control-Button-1>") if sys.platform == "darwin" else ("<Button-3>",)
+
+
+def save_bindings():
+    return ("<Control-Return>", "<Command-Return>") if sys.platform == "darwin" else ("<Control-Return>",)
+
+
 def keep_awake():
     """Hold an OS-supported idle-sleep assertion for the application's lifetime."""
     if sys.platform == "win32":

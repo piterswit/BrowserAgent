@@ -243,7 +243,7 @@ macOS/Linux 在目标系统上构建，不能在 Windows 上交叉生成可运�
 
 输出为带系统和架构名称的 `.tar.gz`：macOS 包含 `BrowserAgent.app`，Linux 包含 `FB_server` 和 `conf/FB_bridge_host`。保留解压后的执行权限和目录结构。macOS 同时提供 Intel、Apple Silicon 构建流程；正式向外分发仍需要开发者签名和 Apple 公证，本仓库未配置签名凭据。Linux 二进制以 Ubuntu 22.04 x86_64 为构建基线。
 
-`.github/workflows/cross_platform.yml` 为 Windows、Linux、macOS Apple Silicon 和 Intel 运行依赖安装、Python/插件回归、隔离浏览器流程及原生 POSIX 打包。Linux 在虚拟显示服务中验证主窗口、设置、发帖和文案窗口。可在对应 Actions 运行的 artifacts 中下载 POSIX 包；原有 Windows 标签发布流程保持不变。当前机器为 Windows，本地通过结果不等于 macOS/Linux 原生运行已验证，须以对应原生 CI 和实机联调结果为准。
+`.github/workflows/cross_platform.yml` 为 Windows、Linux、macOS Apple Silicon 和 Intel 运行依赖安装、Python/插件回归、隔离浏览器流程及原生 POSIX 打包。Linux 在虚拟显示服务中验证主窗口、设置、发帖和文案窗口。另可手动运行 **Build macOS arm64 and x64**，分别构建 `macOS_arm64.dmg` 和 `macOS_x64.dmg`，校验应用与通信组件架构、签名、组件认证和原生启动，输出 SHA-256 与构建信息。Mac 使用原生 `.app` 目录包，配置独立存放，支持 Control 点按和 Command+Return；详情见 [MACOS.md](MACOS.md)。可在对应 Actions 运行的 artifacts 中下载包；原有 Windows 标签发布流程保持不变。当前机器为 Windows，本地通过结果不等于 macOS/Linux 原生运行已验证，须以对应原生 CI 和实机联调结果为准。
 
 ## 代码结构与验证
 

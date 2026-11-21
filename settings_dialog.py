@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 
 from post_manager import post_widget, center_window, bind_titlebar_theme
 from task_settings import DEFAULT_TASK_SETTINGS, validate_task_settings
+from platform_support import save_bindings
 
 
 class SettingsDialog(tk.Toplevel):
@@ -23,7 +24,7 @@ class SettingsDialog(tk.Toplevel):
         post_widget(ttk.Label, body, "PostHint.TLabel", text="保存后对下一次启动的任务生效。").pack(anchor="w", pady=(4, 20))
         self.add_field(body, "自动活跃时长", self.minutes, "分钟", "首页、小组、自定义及 Reels，范围 1–1440 分钟。")
         ttk.Separator(body).pack(fill="x", pady=18)
-        self.add_field(body, "每次取消请求", self.limit, "个", "先滚动到底部，再从下往上取消，范围 1–1000 个。")
+        self.add_field(body, "每次取消请求", self.limit, "个", "预加载设置数量的 1.5 倍，再从下往上取消；范围 1–1000 个。")
         footer = ttk.Frame(body)
         footer.pack(side="bottom", fill="x", pady=(20, 0))
         post_widget(ttk.Button, footer, "Post.TButton", text="恢复默认", command=self.restore,
@@ -31,7 +32,8 @@ class SettingsDialog(tk.Toplevel):
         post_widget(ttk.Button, footer, "PostPrimary.TButton", text="保存设置", command=self.save,
                     padding=(18, 8)).pack(side="right")
         self.bind("<Escape>", lambda _event: self.destroy())
-        self.bind("<Control-Return>", lambda _event: self.save())
+        for binding in save_bindings():
+            self.bind(binding, lambda _event: self.save())
 
     def add_field(self, parent, label, variable, unit, hint):
         row = ttk.Frame(parent)

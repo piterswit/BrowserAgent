@@ -13,7 +13,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04, macos-15, macos-15-intel]
+        include:
+          - os: windows-latest
+            python_arch: x64
+            package_arch: auto
+          - os: ubuntu-22.04
+            python_arch: x64
+            package_arch: auto
+          - os: macos-15
+            python_arch: arm64
+            package_arch: arm64
+          - os: macos-15-intel
+            python_arch: x64
+            package_arch: x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -26,6 +38,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22"
@@ -51,16 +64,19 @@ jobs:
       - name: Browser flow checks
         shell: pwsh
         run: |
-          foreach ($script in @('multilingual', 'post', 'background', 'cover', 'cancel_requests')) {
+          foreach ($script in @('identity', 'multilingual', 'post', 'background', 'cover', 'cancel_requests')) {
             node "tools/check_${script}_browser.cjs"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Build native POSIX package
         if: runner.os != 'Windows'
-        run: python tools/build_posix_release.py
+        run: python tools/build_posix_release.py --arch ${{ matrix.package_arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: runner.os != 'Windows'
         with:
-          name: BrowserAgent-${{ runner.os }}-${{ runner.arch }}
-          path: release/*.tar.gz
+          name: BrowserAgent-${{ runner.os }}-${{ matrix.python_arch }}
+          path: |
+            release/*.tar.gz
+            release/*.dmg
+            release/SHA256SUMS_*.txt
           if-no-files-found: error

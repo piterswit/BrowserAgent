@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,37 @@ from packaging.requirements import Requirement
 
 
 class PlatformPathsTests(unittest.TestCase):
+    def test_frozen_mac_host_is_found_in_resources_or_pyinstaller_frameworks(self):
+        for location in ("Resources", "Frameworks"):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                state = base / "private"
+                state.mkdir()
+                executable = base / "BrowserAgent.app/Contents/MacOS/BrowserAgent"
+                host = executable.parent.parent / location / "conf/FB_bridge_host"
+                host.parent.mkdir(parents=True)
+                host.write_bytes(b"native fixture")
+                with patch.object(posix_native, "private_directory", return_value=state), \
+                        patch.object(posix_native, "ensure_secret", return_value="1" * 64), \
+                        patch.object(posix_native, "manifest_directories", return_value=[]), \
+                        patch.object(posix_native.os, "access", return_value=True), \
+                        patch.object(posix_native.sys, "_MEIPASS", str(executable.parent.parent / "Frameworks"), create=True):
+                    self.assertEqual(posix_native.prepare_native_bridge(state, executable, frozen=True), "1" * 64)
+                import json
+                manifest = json.loads((state / "host.json").read_text())
+                self.assertEqual(manifest["path"], str(host.resolve()))
+
+    def test_mac_mouse_and_save_shortcuts_do_not_change_other_platforms(self):
+        with patch.object(platform_support.sys, "platform", "darwin"):
+            self.assertIn("<Button-2>", platform_support.context_menu_bindings())
+            self.assertIn("<Control-Button-1>", platform_support.context_menu_bindings())
+            self.assertIn("<Command-Return>", platform_support.save_bindings())
+            self.assertEqual(platform_support.font_family(), "PingFang SC")
+        for system in ("win32", "linux"):
+            with patch.object(platform_support.sys, "platform", system):
+                self.assertEqual(platform_support.context_menu_bindings(), ("<Button-3>",))
+                self.assertEqual(platform_support.save_bindings(), ("<Control-Return>",))
+
     def test_macos_and_linux_state_are_outside_the_application_bundle(self):
         home = Path.home() / "test-user"
         self.assertEqual(platform_support.user_data_directory("darwin", home, {}), home / "Library/Application Support/BrowserAgent")

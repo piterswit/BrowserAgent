@@ -17,7 +17,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import websockets
 from config_store import load_configuration, save_configuration, configuration_folder
-from platform_support import keep_awake, set_app_identity, font_family
+from platform_support import keep_awake, set_app_identity, font_family, context_menu_bindings
 from system_theme import system_theme_name
 from bridge_security import check_origin, authenticate
 from native_bridge import prepare_native_bridge
@@ -263,7 +263,8 @@ class App:
         self.list_view.tag_configure("error", foreground="#b33e46")
         self.list_view.bind("<<TreeviewSelect>>", lambda event: self.update_summary())
         self.account_menu = tk.Menu(self.root, tearoff=False)
-        self.list_view.bind("<Button-3>", self.show_account_menu)
+        for binding in context_menu_bindings():
+            self.list_view.bind(binding, self.show_account_menu)
         self.list_view.bind("<Double-Button-1>", self.on_account_double_click)
 
         yscroll = tb.Scrollbar(frame, orient="vertical", command=self.list_view.yview)
@@ -273,8 +274,8 @@ class App:
         self.list_view.pack(side="left", fill="both", expand=True)
         # Apply after ttkbootstrap has built its default table style.
         style = ttk.Style(self.root)
-        style.configure("Accounts.Treeview", rowheight=40, font=("Microsoft YaHei UI", 10))
-        style.configure("Accounts.Treeview.Heading", font=("Microsoft YaHei UI", 10, "normal"), padding=(10, 12))
+        style.configure("Accounts.Treeview", rowheight=40, font=(font_family(), 10))
+        style.configure("Accounts.Treeview.Heading", font=(font_family(), 10, "normal"), padding=(10, 12))
         self.list_view.configure(style="Accounts.Treeview")
 
     def remove_client(self, client_id):

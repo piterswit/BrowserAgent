@@ -84,6 +84,8 @@ def prepare_native_bridge(folder=None, executable=None, frozen=None):
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     if frozen:
         candidates = [executable.parent / "conf/FB_bridge_host", executable.parent.parent / "Resources/conf/FB_bridge_host"]
+        if getattr(sys, "_MEIPASS", None):
+            candidates.append(Path(sys._MEIPASS) / "conf/FB_bridge_host")
         host = next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
         if host is None:
             raise OSError("Missing executable conf/FB_bridge_host")
