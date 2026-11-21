@@ -8,6 +8,7 @@ const background = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/bg
 const readerSource = background.slice(background.indexOf("async function readProfileIdentity("),
   background.indexOf("async function loadAvatarThumbnail("));
 const imageURL = "https://scontent.fixture.fbcdn.net/avatar.png";
+const fixtureImage = fs.readFileSync(path.join(__dirname, "../WS Browser Bridge/icon/avatar-placeholder.png")).toString("base64");
 
 withBrowser(async port => {
   const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {method: "PUT"})).json();
@@ -23,9 +24,10 @@ withBrowser(async port => {
   try {
     await cdp.call("Page.enable");
     cdp.events.set("Fetch.requestPaused", params => {
+      const image = params.request.url === imageURL;
       cdp.call("Fetch.fulfillRequest", {requestId: params.requestId, responseCode: 200,
-        responseHeaders: [{name: "Content-Type", value: "text/html"}],
-        body: Buffer.from("<!doctype html><body></body>").toString("base64")}).catch(console.error);
+        responseHeaders: [{name: "Content-Type", value: image ? "image/png" : "text/html; charset=utf-8"}],
+        body: image ? fixtureImage : Buffer.from("<!doctype html><meta charset='utf-8'><body></body>").toString("base64")}).catch(console.error);
     });
     await cdp.call("Fetch.enable", {patterns: [{urlPattern: "*"}]});
     const img = alt => `<img src="${imageURL}" alt="${alt}" style="width:168px;height:168px">`;
@@ -49,10 +51,15 @@ withBrowser(async port => {
       await evaluate(`document.documentElement.lang='ro'; document.title='Alice Chen | Facebook';
         document.body.innerHTML=${JSON.stringify(html)};
         window.require=()=>({USER_ID:'123',NAME:'Alice Chen'});`);
+      await evaluate(`Promise.all([...document.images].map(image => image.decode())).then(() =>
+        new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))`);
       const identity = await read(target.id);
       assert.equal(identity.fb_name, "Alice Chen", fixture.name);
       assert.equal(identity.fb_id, "123", fixture.name);
-      assert.equal(identity.avatar_url, fixture.missing ? null : imageURL, fixture.name);
+      const diagnostic = identity.avatar_url || fixture.missing ? "" : JSON.stringify(await evaluate(`({url:location.href,
+        images:[...document.querySelectorAll('img,svg image')].map(image=>({alt:image.getAttribute('alt'),
+        label:image.getAttribute('aria-label'),rect:image.getBoundingClientRect().toJSON()}))})`));
+      assert.equal(identity.avatar_url, fixture.missing ? null : imageURL, fixture.name + diagnostic);
       console.log("Romanian identity: " + fixture.name + " passed");
     }
   } finally {

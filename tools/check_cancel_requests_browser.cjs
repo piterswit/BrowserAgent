@@ -15,6 +15,19 @@ function setup(options) {
   document.body.innerHTML = '<button id="entry"></button><main><button id="wrong">Cancel request</button></main>';
   document.querySelector("#entry").textContent = labels.sent;
   window.clicked = [];
+  window.preloadedIds = [];
+  const NativeSet = window.Set;
+  // Observe real sampled profile keys without assuming virtual scrolling renders every intervening row.
+  window.Set = class extends NativeSet {
+    constructor(values) { super(values); this.startedEmpty = values === undefined; }
+    add(value) {
+      const person = this.startedEmpty && typeof value === "string" && value.match(/^\/person(\d+)$/);
+      if (person && window.clicked.length === 0 && !window.preloadedIds.includes(Number(person[1]))) {
+        window.preloadedIds.push(Number(person[1]));
+      }
+      return super.add(value);
+    }
+  };
   window.startedAt = Date.now();
   window.wrongClicks = 0;
   document.querySelector("#wrong").onclick = () => window.wrongClicks++;
@@ -117,13 +130,15 @@ async function scenario(port, options) {
     await evaluate("window.__fbCancelRequestOptions = " + JSON.stringify({limit: options.limit}));
     const result = await evaluate(source);
     const clicked = await evaluate("window.clicked");
+    const preloadedIds = await evaluate("window.preloadedIds");
+    assert.equal(preloadedIds.length, result.loaded, "observed sampled keys must match the reported load count");
     assert.equal(await evaluate("window.wrongClicks"), 0, "unrelated Cancel and out-of-dialog actions must remain untouched");
     assert.equal(new Set(clicked).size, clicked.length, "never repeat a request");
     if (options.expectTimeLimit) {
       const elapsed = await evaluate("window.firstClickAt - window.startedAt");
       assert.ok(elapsed >= 30000 && elapsed < 35000, "preload must stop at its time budget: " + elapsed);
       assert.ok(result.loaded < result.loadTarget, "large list must proceed without reaching the target or true bottom");
-      assert.equal(clicked[0], result.loaded - 1, "start with the oldest request in the sampled batch");
+      assert.equal(clicked[0], Math.max(...preloadedIds), "start with the oldest request in the sampled batch");
     }
     if (options.stop || options.blockAfterClick) assert.equal(clicked.length, 1);
     else if (options.noResponse) {
@@ -135,8 +150,7 @@ async function scenario(port, options) {
       const limit = Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 1000 ? options.limit : 100;
       assert.ok(result.loaded <= Math.ceil(limit * 1.5), "never preload more than 150% of the cancellation cap");
       if (options.expectedLoaded != null) assert.equal(result.loaded, options.expectedLoaded);
-      const expected = Array.from({length: options.count || (options.virtual ? 12 : 2)}, (_, id) => id)
-        .filter(id => id >= (options.disabledPrefix || 0)).slice(0, result.loaded).reverse().slice(0, limit);
+      const expected = [...preloadedIds].sort((a, b) => b - a).slice(0, limit);
       assert.deepEqual(clicked, expected, "must process the sampled batch from the bottom without cancelling new rows: " + result.detail);
       assert.equal(result.confirmed, clicked.length, result.detail);
     }
