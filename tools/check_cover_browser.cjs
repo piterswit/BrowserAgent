@@ -16,6 +16,10 @@ async function connect(url) {
   });
   let nextId = 0;
   const pending = new Map(), events = new Map();
+  socket.addEventListener("close", () => {
+    for (const request of pending.values()) request.reject(new Error("Test browser connection closed"));
+    pending.clear();
+  });
   socket.addEventListener("message", event => {
     const message = JSON.parse(event.data);
     if (message.id) {
@@ -221,17 +225,32 @@ async function withBrowser(check) {
   const browser = spawn(chrome, ["--headless=new", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"],
   {stdio: "ignore", windowsHide: true});
+  let controller;
   try {
     const activePort = path.join(profile, "DevToolsActivePort");
     for (let attempt = 0; !fs.existsSync(activePort) && attempt < 150; attempt++) await pause(100);
-    const port = Number(fs.readFileSync(activePort, "utf8").split(/\r?\n/)[0]);
+    const [portNumber, browserPath] = fs.readFileSync(activePort, "utf8").split(/\r?\n/);
+    const port = Number(portNumber);
+    controller = await connect("ws://127.0.0.1:" + port + browserPath);
     await check(port);
   } finally {
-    const closed = new Promise(resolve => browser.once("exit", resolve));
-    browser.kill();
-    await Promise.race([closed, pause(5000)]);
-    assert.ok(profile.startsWith(cache + path.sep));
-    fs.rmSync(profile, {recursive: true, force: true, maxRetries: 10, retryDelay: 150});
+    const exited = () => browser.exitCode !== null || browser.signalCode !== null;
+    const closed = exited() ? Promise.resolve() : new Promise(resolve => browser.once("exit", resolve));
+    const bounded = async (promise, timeout) => {
+      let timer;
+      try { await Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, timeout); })]); }
+      finally { clearTimeout(timer); }
+    };
+    // Browser.close lets macOS Chrome helpers flush and exit before their profile is removed.
+    if (controller) await bounded(controller.call("Browser.close").catch(() => {}), 3000);
+    controller?.close();
+    if (!exited()) await bounded(closed, 5000);
+    if (!exited()) { browser.kill(); await bounded(closed, 3000); }
+    if (!exited()) { browser.kill("SIGKILL"); await bounded(closed, 3000); }
+    const actualCache = fs.realpathSync(cache);
+    assert.ok(actualCache.startsWith(fs.realpathSync(project) + path.sep));
+    assert.ok(fs.realpathSync(profile).startsWith(actualCache + path.sep));
+    await fs.promises.rm(profile, {recursive: true, force: true, maxRetries: 20, retryDelay: 200});
   }
 }
 
