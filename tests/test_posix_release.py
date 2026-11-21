@@ -39,7 +39,7 @@ class PosixReleaseTests(unittest.TestCase):
                 self.assertEqual(exe["target_arch"], architecture)
                 self.assertTrue(exe["exclude_binaries"])
                 self.assertFalse(exe["console"])
-                self.assertEqual(exe["codesign_identity"], "-")
+                self.assertIsNone(exe["codesign_identity"])
                 bundle = {item.arg: ast.literal_eval(item.value) for item in calls["BUNDLE"].keywords}
                 self.assertEqual(bundle["info_plist"]["CFBundleShortVersionString"], "0.9.0")
                 self.assertEqual(bundle["info_plist"]["CFBundleVersion"], "0.9.0")

@@ -39,7 +39,7 @@ a = Analysis([{str(root / "server.py")!r}], pathex=[{str(root)!r}], binaries=[],
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='BrowserAgent', console=False,
           debug=False, strip=False, upx=False, argv_emulation=False,
-          target_arch={architecture!r}, codesign_identity='-')
+          target_arch={architecture!r}, codesign_identity=None)
 collection = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='BrowserAgent')
 app = BUNDLE(collection, name='BrowserAgent.app', icon={str(work / "BrowserAgent.icns")!r},
              bundle_identifier='com.browseragent.desktop', version={version!r}, info_plist={info!r})
@@ -125,7 +125,8 @@ def main():
     work = ROOT / "build" / ("posix-" + args.tag + "-" + label)
     work.mkdir(parents=True, exist_ok=True)
     common = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--workpath", str(work / "work")]
-    native = ["--target-arch", architecture, "--codesign-identity", "-"] if sys.platform == "darwin" else []
+    # Leave identity unset: PyInstaller performs ad-hoc signing without enabling hardened runtime.
+    native = ["--target-arch", architecture] if sys.platform == "darwin" else []
     subprocess.run([*common, "--onefile", "--specpath", str(work), *native, "--name", "FB_bridge_host", "--distpath", str(work / "host"),
                     str(ROOT / "native_host_posix.py")], check=True, cwd=ROOT)
     host = work / "host/FB_bridge_host"
