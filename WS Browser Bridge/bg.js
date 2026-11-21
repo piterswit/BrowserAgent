@@ -139,7 +139,9 @@ async function readProfileIdentity(tabId) {
       let partial = null;
       const cleanName = text => (typeof text === "string" ? text : "").replace(/^\(\d+\)\s*/, "")
         .replace(/\s*[|\-]\s*Facebook.*$/i, "").trim();
-      const validName = text => text && !/^(notifications?|facebook|home|menu|settings|your profile|通知|通知消息|通知訊息|首頁|首页|菜单|菜單|選單|设置|設定|个人主页|個人主頁|個人檔案|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(text);
+      const validName = text => text && !/^(notifications?|facebook|home|menu|settings|your profile|notificări|notificari|pagina de start|meniu|setări|setari|profilul tău|profilul tau|通知|通知消息|通知訊息|首頁|首页|菜单|菜單|選單|设置|設定|个人主页|個人主頁|個人檔案|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(text);
+      const avatarWords = /profile picture|头像|頭像|大頭貼|fotografi[ae] de profil|poz[ăa] de profil/i;
+      const genericAvatar = /^(profile picture|头像|頭像|大頭貼|(?:(?:acțiuni|acţiuni|actiuni) privind )?fotografi[ae] de profil|poz[ăa] de profil)$/i;
       const normalizeUser = user => {
         if (!user || typeof user !== "object") return null;
         const id = String(user.USER_ID || user.ACCOUNT_ID || "");
@@ -192,7 +194,7 @@ async function readProfileIdentity(tabId) {
               (url.pathname === "/profile.php" && /^[1-9]\d+$/.test(url.searchParams.get("id") || "") || part && !part.includes("/") && !excluded.test(part)) &&
               (user?.id && (url.searchParams.get("id") === user.id || part === user.id) ||
                 user?.name && label.toLowerCase() === user.name.toLowerCase() ||
-                /^(your profile|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(label) || !user && validName(label));
+                /^(your profile|profilul tău|profilul tau|你的个人主页|您的个人主页|你的個人主頁|您的個人主頁|你的個人檔案|您的個人檔案)$/i.test(label) || !user && validName(label));
           } catch { return false; }
         }) : null;
         const linked = ownLink ? new URL(ownLink.href, current.href) : null;
@@ -220,16 +222,19 @@ async function readProfileIdentity(tabId) {
             .filter(el => {
               if (el.closest('[role="dialog"], [role="article"]')) return false;
               const parent = el.closest('a, [role="button"]');
-              const description = [el.getAttribute("alt"), el.getAttribute("aria-label"), parent?.getAttribute("aria-label")].filter(Boolean).join(" ");
+              const labels = [el.getAttribute("alt"), el.getAttribute("aria-label"), parent?.getAttribute("aria-label")].filter(Boolean);
+              const description = labels.join(" ");
               const rect = el.getBoundingClientRect();
               return rect.width >= 100 && rect.height >= 100 && rect.width / rect.height > 0.8 && rect.width / rect.height < 1.25 &&
-                !/cover|封面/i.test(description) && /profile picture|头像|頭像|大頭貼/i.test(description) &&
-                (!name || !el.getAttribute("alt") || description.toLowerCase().includes(name.toLowerCase()) || /^(profile picture|头像|頭像|大頭貼)$/i.test(description));
+                !/cover|封面|copert[ăa]/i.test(description) && avatarWords.test(description) &&
+                (!name || !el.getAttribute("alt") || description.toLowerCase().includes(name.toLowerCase()) ||
+                  labels.every(label => genericAvatar.test(label.trim())));
             }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
           const picture = pictures[0];
           const linkPicture = ownLink?.querySelector('img, svg image');
           const accountMenu = document.querySelector('[aria-label="Your profile"], [aria-label="你的个人主页"], [aria-label="你的头像"], [aria-label="您的个人主页"], [aria-label="您的头像"], [aria-label="你的個人檔案"], [aria-label="您的個人檔案"], [aria-label="你的個人主頁"], [aria-label="您的個人主頁"], [aria-label="你的大頭貼"], [aria-label="您的大頭貼"], [aria-label="你的頭像"], [aria-label="您的頭像"]');
-          const menuPicture = accountMenu?.querySelector('img, svg image');
+          const localizedMenu = document.querySelector('[role="banner"] [aria-label="Profilul tău"], [role="navigation"] [aria-label="Profilul tău"], [role="banner"] [aria-label="Profilul tau"], [role="navigation"] [aria-label="Profilul tau"]');
+          const menuPicture = (accountMenu || localizedMenu)?.querySelector('img, svg image');
           const source = el => el?.currentSrc || el?.src || el?.getAttribute("href") || el?.getAttribute("xlink:href");
           const avatarUrl = source(picture) || user?.picture || source(linkPicture) || source(menuPicture) || null;
           partial = {fb_name: name || null, fb_id: fbId, fb_username: username, profile_url: profileUrl, avatar_url: avatarUrl};

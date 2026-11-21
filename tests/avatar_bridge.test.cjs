@@ -369,6 +369,60 @@ test(`${heading}: localized headings never replace the profile's name and photo`
 });
 }
 
+for (const [alt, parentLabel, expected] of [
+  ["Fotografia de profil a lui Alice Chen", "", true],
+  ["Fotografia de profil", "Acțiuni privind fotografia de profil", true],
+  ["Fotografie de profil", "Acţiuni privind fotografia de profil", true],
+  ["Poză de profil", "", true],
+  ["Fotografia de profil a lui Bob Smith", "", false],
+  ["Fotografia de profil Alice Chen copertă", "", false],
+]) {
+  test("Romanian identity avatar stays scoped to the profile: " + alt + " / " + parentLabel, async () => {
+    const b = bridge("input");
+    b.context.location = {href: "https://www.facebook.com/alice"};
+    const picture = {currentSrc: "https://scontent.example.fbcdn.net/alice.jpg",
+      closest: selector => selector === 'a, [role="button"]' && parentLabel ? {getAttribute: () => parentLabel} : null,
+      getAttribute: name => name === "alt" ? alt : null,
+      getBoundingClientRect: () => ({width: 168, height: 168, top: 80})};
+    b.context.document = {title: "Facebook", querySelector: selector =>
+      selector === 'meta[property="og:title"]' ? {content: "Alice Chen | Facebook"} : null,
+      querySelectorAll: selector => selector.startsWith('[role="main"] img') ? [picture] :
+        selector.startsWith('[role="main"] h1') ? [{innerText: "Notificări", closest: () => null}] : []};
+    b.chrome.scripting.executeScript = async options => [{result: await options.func()}];
+    const identity = await vm.runInContext("readProfileIdentity(99)", b.context);
+    assert.equal(identity.fb_name, "Alice Chen");
+    assert.equal(identity.avatar_url, expected ? picture.currentSrc : null);
+  });
+}
+
+test("Romanian own-profile link provides its SVG avatar on the homepage", async () => {
+  const b = bridge("input");
+  b.context.location = {href: "https://www.facebook.com/"};
+  b.context.window.require = () => ({USER_ID: "123", NAME: "Alice Chen"});
+  const image = {getAttribute: name => name === "xlink:href" ? "https://scontent.example.fbcdn.net/alice.jpg" : null};
+  const link = {href: "https://www.facebook.com/alice", getAttribute: () => "Profilul tău",
+    closest: selector => selector === '[role="navigation"], [role="banner"]' ? {} : null,
+    querySelector: () => image};
+  b.context.document = {title: "Facebook", querySelector: () => null,
+    querySelectorAll: selector => selector === 'a[aria-label][href]' ? [link] : []};
+  b.chrome.scripting.executeScript = async options => [{result: await options.func()}];
+  const identity = await vm.runInContext("readProfileIdentity(99)", b.context);
+  assert.equal(identity.fb_name, "Alice Chen");
+  assert.equal(identity.fb_id, "123");
+  assert.equal(identity.avatar_url, "https://scontent.example.fbcdn.net/alice.jpg");
+});
+
+test("Romanian navigation menu avatar is a fallback without using an OG cover", async () => {
+  const b = bridge("input");
+  b.context.location = {href: "https://www.facebook.com/alice"};
+  b.context.document = {title: "Alice Chen | Facebook", querySelectorAll: () => [],
+    querySelector: selector => selector === 'meta[property="og:image"]' ? {content: "https://scontent.example.fbcdn.net/cover.jpg"} :
+      selector.includes('Profilul tău') ? {querySelector: () => ({currentSrc: "https://scontent.example.fbcdn.net/alice.jpg"})} : null};
+  b.chrome.scripting.executeScript = async options => [{result: await options.func()}];
+  const identity = await vm.runInContext("readProfileIdentity(99)", b.context);
+  assert.equal(identity.avatar_url, "https://scontent.example.fbcdn.net/alice.jpg");
+});
+
 test("main profile heading is used when metadata is missing", async () => {
   const b = bridge("input");
   b.context.location = {href: "https://www.facebook.com/alice"};
