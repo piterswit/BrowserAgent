@@ -15,4 +15,10 @@ withBrowser(async port => {
     await postScenario(port, {language: "zh-CN", composer, photo: "照片/视频", remove: "移除照片",
       publish: "发布", notice: "帖子已发布"}, true, false, {replaceAfterUpload: true});
   }
+  for (const composer of ["Spune la ce te gândești…", "Spune la ce te gândești...",
+    "Spune la ce te gândești, Isabella", "Spune la ce te gândeşti…"]) {
+    await postScenario(port, {language: "ro", composer, photo: "Fotografie/clip video", remove: "Elimină fotografia",
+      publish: "Postează", notice: "Postarea a fost publicată"}, true, false,
+      {text: "O zi frumoasă alături de prieteni.", replaceAfterUpload: true});
+  }
 }).catch(error => { console.error(error); process.exitCode = 1; });

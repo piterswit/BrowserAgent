@@ -1,5 +1,5 @@
 (() => {
-  const version = 2;
+  const version = 3;
   if (window.__fbUI?.version === version) return;
 
   // Facebook UI label variants are grouped by language and action.
@@ -570,7 +570,7 @@
       coverEdit: "Editează fotografia de copertă|Adaugă o fotografie de copertă|Schimbă fotografia de copertă",
       coverSubject: "Fotografia de copertă|Fotografie de copertă", photoUpload: "Încarcă o fotografie|Încarcă fotografia",
       save: "Salvează", saveChanges: "Salvează modificările", cancel: "Anulează",
-      composer: "La ce te gândești|Creează o postare|Scrie ceva",
+      composer: "La ce te gândești|Spune la ce te gândești|La ce te gândeşti|Spune la ce te gândeşti|Creează o postare|Scrie ceva",
       photoVideo: "Fotografie/clip video|Foto/video|Fotografie", photoRemove: "Elimină fotografia|Șterge fotografia",
       publish: "Postează|Publică|Distribuie acum", postSubject: "Postare|Postarea",
       updated: "Actualizată|Actualizat|Salvată|Salvat", published: "Publicată|Publicat|Distribuită",

@@ -187,3 +187,18 @@ test("reinjection upgrades the previous helper and recognizes Chinese composer v
     assert.equal(window.__fbUI.pattern("composer").test(label), true, label);
   }
 });
+
+test("Romanian profile composer from the reported page is recognized after upgrading a cached helper", () => {
+  const {window, context} = fixture("ro");
+  const old = window.__fbUI = {version: 2};
+  vm.runInContext(source, context);
+  assert.notEqual(window.__fbUI, old);
+  const composer = window.__fbUI.pattern("composer");
+  for (const label of ["Spune la ce te gândești…", "Spune la ce te gândești...",
+    "Spune la ce te gândești, Isabella", "Spune la ce te gândeşti…"]) {
+    assert.equal(composer.test(label), true, label);
+    assert.equal(window.__fbUI.pattern("publish").test(label), false, label);
+  }
+  for (const label of ["Nu spune la ce te gândești", "Editează fotografia de copertă", "Postează"])
+    assert.equal(composer.test(label), false, label);
+});
