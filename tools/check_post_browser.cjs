@@ -21,4 +21,10 @@ withBrowser(async port => {
       publish: "Postează", notice: "Postarea a fost publicată"}, true, false,
       {text: "O zi frumoasă alături de prieteni.", replaceAfterUpload: true});
   }
+  const romanianProfile = {language: "ro", composer: "La ce te gândeşti?", photo: "Foto/video", remove: "Elimină fotografia",
+    publish: "Postează", notice: "Postarea a fost publicată"};
+  for (const options of [{profileDualComposer: true}, {hiddenComposer: true},
+    {profileDualComposer: true, hiddenComposer: true}, {profileDualComposer: true, twoComposerPanels: true}]) {
+    await postScenario(port, romanianProfile, true, false, {...options, headerComposer: "Spune la ce te gândeşti..."});
+  }
 }).catch(error => { console.error(error); process.exitCode = 1; });

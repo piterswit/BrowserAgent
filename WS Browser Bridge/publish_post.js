@@ -9,8 +9,15 @@
   let stopped = false;
   let finished = false;
   let submitted = false;
-  const visible = node => !!node && node.isConnected && !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length) &&
-    getComputedStyle(node).visibility !== "hidden" && getComputedStyle(node).display !== "none";
+  const visible = node => {
+    if (!node?.isConnected || !(node.offsetWidth || node.offsetHeight || node.getClientRects().length)) return false;
+    for (let parent = node; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (parent.hidden || parent.inert || parent.getAttribute?.("aria-hidden") === "true" ||
+          style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return false;
+    }
+    return true;
+  };
   const text = node => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
   const words = {
     composer: /^(what['’]?s on your mind.*|create post|写点什么.*|你在想什么.*|分享近况.*|建立貼文|在想些什麼.*)$/i,
@@ -41,7 +48,8 @@
       if (result) return result;
       await sleep(150);
     }
-    throw new Error(stopped ? "发帖任务已取消" : ui.describe(stage, typeof scope === "function" ? scope() : scope));
+    throw new Error(stopped ? "发帖任务已取消" : ui.describe(typeof stage === "function" ? stage() : stage,
+      typeof scope === "function" ? scope() : scope));
   };
   const click = node => {
     guard();
@@ -60,6 +68,16 @@
     const candidates = matchingControls(scope, matcher);
     return candidates.length === 1 ? candidates[0] : null;
   };
+  const primaryComposer = candidates => candidates.filter(candidate => {
+    // Profiles may expose both a header shortcut and the actual composer panel.
+    // Prefer a unique composer beside Photo/video, without crossing into a shared page ancestor.
+    for (let parent = candidate.parentElement, depth = 0; parent && depth < 8; parent = parent.parentElement, depth++) {
+      if (candidates.filter(node => parent.contains(node)).length !== 1) break;
+      if (matchingControls(parent, words.photo).length === 1) return true;
+      if (parent.matches?.('[role="main"], main')) break;
+    }
+    return false;
+  });
   const getEditor = dialog => {
     const editors = [...dialog.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')].filter(visible);
     return editors.length === 1 ? editors[0] : null;
@@ -101,12 +119,18 @@
         throw new Error("请先登录 Facebook 并完成账号验证");
       }
       const previousDialogs = new Set([...document.querySelectorAll('[role="dialog"]')].filter(visible));
+      let composerCount = 0, primaryCount = 0;
       const launch = await waitFor(() => {
         const mains = [...document.querySelectorAll('[role="main"], main')].filter(visible);
         const roots = mains.filter(node => !mains.some(other => other !== node && other.contains?.(node)));
-        const candidates = roots.flatMap(main => matchingControls(main, words.composer));
-        return candidates.length === 1 ? candidates[0] : null;
-      }, 20000, "发帖入口", () => document.querySelector('[role="main"], main') || document);
+        const candidates = roots.flatMap(main => matchingControls(main, words.composer)).filter(node =>
+          !node.disabled && !node.closest?.('[role="article"], article, [role="dialog"], [role="navigation"], [role="banner"], [aria-disabled="true"], [disabled]'));
+        composerCount = candidates.length;
+        const primary = candidates.length > 1 ? primaryComposer(candidates) : candidates;
+        primaryCount = primary.length;
+        return primary.length === 1 ? primary[0] : null;
+      }, 20000, () => `发帖入口（匹配 ${composerCount} 个，主编辑区 ${primaryCount} 个）`,
+        () => document.querySelector('[role="main"], main') || document);
       click(launch);
       const postDialog = await waitFor(() => {
         const dialogs = [...document.querySelectorAll('[role="dialog"]')]

@@ -34,6 +34,31 @@ function setupPost(labels, hasImage, deny, options = {}) {
   document.documentElement.dir = labels.rtl ? "rtl" : "ltr";
   document.body.innerHTML = '<main><button id="composer"></button></main>';
   document.querySelector("#composer").textContent = labels.composer;
+  if (options.profileDualComposer) {
+    const composer = document.querySelector("#composer");
+    const panel = document.createElement("section");
+    composer.replaceWith(panel);
+    panel.append(composer);
+    const photo = document.createElement("button");
+    photo.textContent = labels.photo;
+    panel.append(photo);
+    const shortcut = document.createElement("button");
+    shortcut.textContent = options.headerComposer || labels.composer;
+    shortcut.onclick = () => { throw new Error("wrong profile header composer selected"); };
+    document.querySelector("main").prepend(shortcut);
+    if (options.twoComposerPanels) {
+      const duplicate = panel.cloneNode(true);
+      duplicate.querySelector("button").onclick = () => { throw new Error("ambiguous composer selected"); };
+      document.querySelector("main").append(duplicate);
+    }
+  }
+  if (options.hiddenComposer) {
+    const hidden = document.createElement("section");
+    hidden.setAttribute("aria-hidden", "true");
+    hidden.innerHTML = '<button></button>';
+    hidden.querySelector("button").textContent = labels.composer;
+    document.querySelector("main").append(hidden);
+  }
   if (options.emptyMain) document.body.prepend(document.createElement("main"));
   if (options.nestedControls) {
     const wrapper = document.createElement("div");
@@ -162,9 +187,11 @@ async function postScenario(port, labels, hasImage, deny = false, options = {}) 
       text: options.text || "A local multilingual fixture.", hasImage}));
     await evaluate(uiSource + "\n" + postSource);
     if (options.reinject) await evaluate(uiSource + "\n" + postSource);
-    const result = await evaluate("Promise.race([window.postResult, new Promise((_, reject) => setTimeout(() => reject(new Error('Post fixture timed out')), 12000))])");
+    const result = await evaluate("Promise.race([window.postResult, new Promise((_, reject) => setTimeout(() => reject(new Error('Post fixture timed out')), " +
+      (options.twoComposerPanels ? 25000 : 12000) + "))])");
     const expected = !deny && !options.draft && !options.cancelDuringAuth && !options.editDuringAuth &&
-      !options.removeDuringAuth && !options.loseText && !options.rejectedInput && !options.disableDuringAuth;
+      !options.removeDuringAuth && !options.loseText && !options.rejectedInput && !options.disableDuringAuth && !options.twoComposerPanels;
+    if (options.twoComposerPanels) assert.match(result.detail, /匹配 3 个，主编辑区 2 个/);
     assert.equal(result.success, expected, result.detail);
     assert.equal(result.confirmed, expected, result.detail);
     assert.equal(await evaluate("window.clicks"), expected ? 1 : 0);
