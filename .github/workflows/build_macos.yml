@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install locked dependencies
-        run: python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements.lock"
       - name: Run Python and plugin regression tests
         shell: pwsh
         run: |
