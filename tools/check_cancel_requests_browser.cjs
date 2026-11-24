@@ -8,9 +8,12 @@ const source = ["fb_ui.js", "cancel_friend_requests.js"].map(name =>
 
 function setup(options) {
   const realTimer = window.setTimeout.bind(window), wall = Date.now(), started = performance.now();
+  // Give the time-budget case enough real frames on slower CI hosts; a 20x clock
+  // magnifies ordinary rendering latency and can falsely count it as extra loading.
+  const speed = options.expectTimeLimit ? 5 : 20;
   // Accelerate only this isolated fixture's waits and its matching clock by the same factor.
-  window.setTimeout = (fn, ms) => realTimer(fn, ms / 20);
-  Date.now = () => wall + (performance.now() - started) * 20;
+  window.setTimeout = (fn, ms) => realTimer(fn, ms / speed);
+  Date.now = () => wall + (performance.now() - started) * speed;
   const labels = options.labels || {sent: "View sent requests", cancel: "Cancel request"};
   document.body.innerHTML = '<button id="entry"></button><main><button id="wrong">Cancel request</button></main>';
   document.querySelector("#entry").textContent = labels.sent;

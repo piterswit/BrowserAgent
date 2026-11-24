@@ -193,21 +193,30 @@
       stable = scroll.scrollTop === previousTop && scroll.scrollHeight === previousHeight &&
         loaded === previousLoaded ? stable + 1 : 0;
     }
-    let failures = 0, idle = 0, scrolls = 0;
+    let failures = 0, idle = 0, scrolls = 0, unstable = 0;
     for (;;) {
       ensureUnblocked();
       if (attempted >= limit) return result(summary() + "；已达到本次取消上限 " + limit + " 个");
       if (modal.isConnected === false || !visible(modal)) throw new Error("好友请求窗口已关闭，已停止任务");
       scroll = scrollContainer(modal);
-      const button = buttons(modal).filter(node => enabled(node) &&
+      // Virtual lists render extra rows just outside the viewport. Include those
+      // when choosing the bottom row, then reveal and revalidate it before clicking.
+      const button = buttons(modal).filter(node => rendered(node) && !node.disabled &&
+        node.getAttribute?.("aria-disabled") !== "true" &&
         matches(node, cancelWords) && inLoadedBatch(node, modal) && !wasAttempted(node, modal)).reverse()
         .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
       if (button) {
+        const originalKey = profileKey(button, modal);
         button.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "instant"});
         await sleep(150);
         ensureUnblocked();
         // Scrolling can rerender a virtual list. Never click a stale or changed control.
-        if (!enabled(button) || !matches(button, cancelWords) || !inLoadedBatch(button, modal)) continue;
+        if (!enabled(button) || !matches(button, cancelWords) || !inLoadedBatch(button, modal) ||
+            profileKey(button, modal) !== originalKey) {
+          if (++unstable >= 20) throw new Error("好友请求列表持续重绘，无法确认操作对象，已停止任务");
+          continue;
+        }
+        unstable = 0;
         const key = profileKey(button, modal);
         if (wasAttempted(button, modal)) continue;
         attemptedNodes.set(button, key);
