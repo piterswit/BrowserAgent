@@ -9,7 +9,7 @@ import subprocess
 import sys
 import zipfile
 
-from check_release import EXTENSION, ROOT, check_archive, check_executable, check_versions, release_version
+from check_release import EXTENSION, ROOT, check_archive, check_executable, check_versions, release_version, copy_extension
 
 
 def version_resource(manifest):
@@ -42,13 +42,14 @@ def zip_folder(folder, destination, include_root=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "release")
     args = parser.parse_args()
     if sys.platform != "win32":
         parser.error("Run this builder on Windows")
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
     tag = args.tag or "v" + release_version(manifest)
     check_versions(tag)
-    target = ROOT / "release" / ("FB_Auto_Active_" + tag)
+    target = args.output_dir.resolve() / ("FB_Auto_Active_" + tag)
     if target.exists():
         parser.error("Release directory already exists; choose a new version or move the old package")
     work = ROOT / "build" / ("windows-" + tag)
@@ -71,7 +72,7 @@ def main():
     shutil.copy2(dist / "FB_server.exe", target / "FB_server.exe")
     (target / "conf").mkdir()
     shutil.copy2(host, target / "conf/FB_bridge_host.exe")
-    shutil.copytree(EXTENSION, target / "Browser_Extension")
+    copy_extension(target / "Browser_Extension")
     for name in ("README.md", "RELEASE_NOTES.md"):
         shutil.copy2(ROOT / name, target / name)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -84,7 +85,7 @@ def main():
     zip_folder(target, archive)
     check_archive(archive, tag)
     plugin = target.parent / ("FB_Browser_Bridge_" + tag + ".zip")
-    zip_folder(EXTENSION, plugin, include_root=False)
+    zip_folder(target / "Browser_Extension", plugin, include_root=False)
     checksums = target.parent / ("SHA256SUMS_" + tag + ".txt")
     checksums.write_text("".join(hashlib.sha256(file.read_bytes()).hexdigest() + "  " + file.name + "\n"
                                  for file in (archive, plugin)), encoding="utf-8")

@@ -1,6 +1,6 @@
 # BrowserAgent
 
-当前版本：**v0.9.1**。更新内容及使用说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+当前版本：**v0.9.1**。最终发布构建使用 Python **3.14.10**（已做兼容性回归）；不要将 Python 3.11.9 作为新发布包的构建环境。更新内容及使用说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 BrowserAgent 由本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成，适配 Windows、macOS 和 Linux。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求、随机更换头像、个人主页封面和发布贴文。
 
@@ -66,13 +66,13 @@ Windows 源码版可双击 `BrowserAgent.pyw` 启动，或用项目虚拟环境�
 macOS、Linux 在项目目录创建虚拟环境并运行：
 
 ```sh
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
 .venv/bin/python BrowserAgent.pyw
 # 已创建环境后也可使用：sh ./start.sh
 ```
 
-先确认 `python3.11 -c "import tkinter; print(tkinter.TkVersion)"` 可运行。macOS 的 Python 必须配有兼容的 Tcl/Tk；Linux 通常需要通过系统包管理器安装 `python3-venv`、`python3-tk` 和中文字体（例如 `fonts-noto-cjk`），并使用实际安装的 Python 3.11+ 版本创建环境。Linux 图形界面需要 X11/Wayland 桌面或兼容的显示服务，纯无界面服务器不能直接显示 Tk 窗口。
+先确认 `python3.14 -c "import tkinter; print(tkinter.TkVersion)"` 可运行。macOS 的 Python 必须配有兼容的 Tcl/Tk；Linux 通常需要通过系统包管理器安装 `python3-venv`、`python3-tk` 和中文字体（例如 `fonts-noto-cjk`），并使用实际安装的 Python 3.11+ 版本创建环境。Linux 图形界面需要 X11/Wayland 桌面或兼容的显示服务，纯无界面服务器不能直接显示 Tk 窗口。
 
 三个系统使用同一份 **WS Browser Bridge** 插件，支持 Chrome、Edge、Chromium；Safari、Firefox 不在当前适配范围。图片上传支持 `C:\…`、UNC、`/Users/…`、`/home/…` 等绝对路径。Linux 的 Snap/Flatpak 浏览器可能隔离 Native Messaging 或图片目录，此类沙箱发行版需单独验证，优先使用浏览器官方提供的常规安装包。
 

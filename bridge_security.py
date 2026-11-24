@@ -6,14 +6,15 @@ import json
 import re
 import secrets
 from http import HTTPStatus
+from native_bridge import EXTENSION_ORIGIN as NATIVE_EXTENSION_ORIGIN
 
 HEX_KEY = re.compile(r"[0-9a-f]{64}\Z")
-EXTENSION_ORIGIN = re.compile(r"chrome-extension://[a-p]{32}\Z")
+EXTENSION_ORIGIN = NATIVE_EXTENSION_ORIGIN.rstrip("/")
 
 
 async def check_origin(path, headers):
     origins = headers.get_all("Origin")
-    if len(origins) != 1 or not EXTENSION_ORIGIN.fullmatch(origins[0]):
+    if len(origins) != 1 or origins[0] != EXTENSION_ORIGIN:
         return HTTPStatus.FORBIDDEN, [("Content-Type", "text/plain")], b"Extension origin required\n"
 
 

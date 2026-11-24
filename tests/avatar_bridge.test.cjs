@@ -523,10 +523,11 @@ test("avatar thumbnail is cropped, resized and transmitted as PNG", async () => 
   let closed = false;
   const bitmap = {width: 200, height: 100, close() { closed = true; }};
   b.context.AbortSignal = {timeout: () => null};
+  b.context.Blob = Blob;
   b.context.fetch = async (url, options) => {
     assert.equal(url, "https://scontent.example.fbcdn.net/photo.jpg");
     assert.equal(options.credentials, "omit");
-    return {ok: true, blob: async () => ({type: "image/jpeg", size: 1024})};
+    return new Response(bytes, {headers: {"Content-Type": "image/jpeg"}});
   };
   b.context.createImageBitmap = async () => bitmap;
   b.context.btoa = value => Buffer.from(value, "binary").toString("base64");
@@ -560,6 +561,25 @@ test("avatar reader rejects non-Facebook image hosts", async () => {
   b.context.fetch = () => { throw new Error("unexpected request"); };
   assert.equal(await vm.runInContext('loadAvatarThumbnail("https://example.com/image.png")', b.context), null);
 });
+
+for (const declared of [null, "1", String(6 * 1024 * 1024)]) {
+  test(`thumbnail stops oversized downloads before decoding (Content-Length ${declared})`, async () => {
+    const b = bridge("input"); let cancelled = false, decoded = false;
+    b.context.AbortSignal = {timeout: () => null};
+    b.context.Blob = Blob;
+    const headers = {"Content-Type": "image/png"};
+    if (declared !== null) headers["Content-Length"] = declared;
+    const body = new ReadableStream({
+      start(ctrl) { ctrl.enqueue(new Uint8Array(6 * 1024 * 1024)); },
+      cancel() { cancelled = true; }
+    });
+    b.context.fetch = async () => new Response(body, {headers});
+    b.context.createImageBitmap = async () => { decoded = true; throw new Error("must not decode"); };
+    assert.equal(await vm.runInContext('loadAvatarThumbnail("https://scontent.example.fbcdn.net/photo.png")', b.context), null);
+    assert.equal(cancelled, true);
+    assert.equal(decoded, false);
+  });
+}
 
 function accountDocument(b, user, {script = false, headings = [], picture = null} = {}) {
   b.context.location = {href: "https://www.facebook.com/me", pathname: "/me"};

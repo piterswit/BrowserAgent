@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from check_release import ROOT, EXTENSION, check_versions, release_version
+from check_release import ROOT, EXTENSION, check_versions, release_version, copy_extension, extension_files
 
 
 def native_architecture(machine, requested="auto"):
@@ -151,11 +151,11 @@ def main():
         shutil.copy2(work / "desktop/FB_server", target / "FB_server")
         (target / "conf").mkdir()
         shutil.copy2(host, target / "conf/FB_bridge_host")
-    shutil.copytree(EXTENSION, target / "Browser_Extension")
+    copy_extension(target / "Browser_Extension")
     for name in ("README.md", "RELEASE_NOTES.md", "MACOS.md"):
         shutil.copy2(ROOT / name, target / name)
-    for file in EXTENSION.rglob("*"):
-        if file.is_file() and (target / "Browser_Extension" / file.relative_to(EXTENSION)).read_bytes() != file.read_bytes():
+    for file in extension_files():
+        if (target / "Browser_Extension" / file.relative_to(EXTENSION)).read_bytes() != file.read_bytes():
             raise RuntimeError("Packaged plugin differs from source: " + file.name)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     (target / "BUILD_INFO.json").write_text(json.dumps({"version": release_version(manifest),

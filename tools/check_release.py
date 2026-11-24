@@ -12,6 +12,31 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 EXTENSION = ROOT / "WS Browser Bridge"
 GUI_ASSETS = ("bridge.ico", "bridge-128.png", "bridge-32.png", "avatar-placeholder.png")
+EXTENSION_FILES = (
+    "manifest.json", "bg.js", "popup.html", "popup.js", "fb_ui.js",
+    "activity_runtime.js", "activity_interactions.js", "tools.js", "auto_reels.js",
+    "change_avatar.js", "change_cover.js", "publish_post.js", "cancel_friend_requests.js",
+    "offscreen.html", "offscreen.js",
+    *("icon/" + name for name in ("avatar-placeholder.png", "bridge-16.png", "bridge-32.png",
+      "bridge-48.png", "bridge-128.png", "bridge-256.png", "bridge.ico", "icon.png")),
+)
+
+
+def extension_files():
+    """Only ship reviewed source assets, never local configs, backups or symlinks."""
+    for relative in EXTENSION_FILES:
+        file = EXTENSION / relative
+        if file.is_symlink() or file.parent.is_symlink() or not file.is_file() or file.resolve().parent not in (EXTENSION.resolve(), EXTENSION.resolve() / "icon"):
+            raise ValueError("Unsafe or missing extension asset: " + relative)
+        yield file
+
+
+def copy_extension(destination):
+    import shutil
+    for file in extension_files():
+        target = destination / file.relative_to(EXTENSION)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(file, target)
 
 
 def release_version(manifest):
@@ -84,11 +109,14 @@ def check_archive(path, tag):
         expected = {prefix + "FB_server.exe", native_host, prefix + "README.md"}
         expected.update(
             prefix + "Browser_Extension/" + file.relative_to(EXTENSION).as_posix()
-            for file in EXTENSION.rglob("*") if file.is_file()
+            for file in extension_files()
         )
         missing = expected - names
         if missing:
             raise ValueError(f"Release archive is missing files: {sorted(missing)}")
+        extension_root = prefix + "Browser_Extension/"
+        if any(name.startswith(extension_root) and not name.endswith("/") and name not in expected for name in names):
+            raise ValueError("Unexpected local file in packaged extension")
         allowed_conf = {prefix + "conf/", native_host}
         if any(not name.startswith(prefix) or ".." in name.split("/")
                or ("conf" in name.casefold().split("/") and name not in allowed_conf)
@@ -97,8 +125,8 @@ def check_archive(path, tag):
         manifest = json.loads(archive.read(prefix + "Browser_Extension/manifest.json"))
         if f"v{release_version(manifest)}" != tag:
             raise ValueError("Packaged extension version differs from release tag")
-        for file in EXTENSION.rglob("*"):
-            if file.is_file() and archive.read(prefix + "Browser_Extension/" + file.relative_to(EXTENSION).as_posix()) != file.read_bytes():
+        for file in extension_files():
+            if archive.read(prefix + "Browser_Extension/" + file.relative_to(EXTENSION).as_posix()) != file.read_bytes():
                 raise ValueError(f"Packaged extension file differs from source: {file.name}")
         if archive.getinfo(prefix + "FB_server.exe").file_size == 0:
             raise ValueError("Packaged executable is empty")

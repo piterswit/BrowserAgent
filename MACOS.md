@@ -16,10 +16,10 @@
 
 ## 在 Mac 本机构建
 
-在与目标架构一致的 Python 3.11 虚拟环境中运行：
+在与目标架构一致的 Python 3.14.10 虚拟环境中运行：
 
 ```bash
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 . .venv/bin/activate
 python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
 python -m unittest discover -s tests -p 'test_*.py'

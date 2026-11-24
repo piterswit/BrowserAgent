@@ -4,6 +4,7 @@ import struct
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -77,6 +78,24 @@ class ReleaseTests(unittest.TestCase):
             path = Path(directory) / "release.zip"
             self.make_archive(path)
             release.check_archive(path, self.tag)
+
+    def test_unreviewed_extension_files_cannot_be_distributed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_archive(path, extra="Browser_Extension/.env")
+            with self.assertRaisesRegex(ValueError, "Unexpected local file"):
+                release.check_archive(path, self.tag)
+
+    def test_extension_copy_does_not_include_local_secrets_or_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / "source", Path(directory) / "target"
+            source.mkdir()
+            (source / "manifest.json").write_text("{}")
+            (source / ".env").write_text("local config, not a real credential")
+            (source / "backup.js").write_text("local backup")
+            with patch.object(release, "EXTENSION", source), patch.object(release, "EXTENSION_FILES", ("manifest.json",)):
+                release.copy_extension(target)
+            self.assertEqual([p.name for p in target.iterdir()], ["manifest.json"])
 
     def test_stale_packaged_script_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

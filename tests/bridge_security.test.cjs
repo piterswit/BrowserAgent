@@ -65,6 +65,30 @@ test("identity and commands wait for automatic native authentication", async () 
   assert.equal(f.opened.length, 1);
 });
 
+test("oversized and non-text socket frames are rejected before queuing", async () => {
+  for (const data of ["x".repeat(131073), new Uint8Array(10)]) {
+    const f = await fixture();
+    await f.socket.onmessage({data});
+    assert.equal(f.socket.readyState, 3);
+    assert.equal(f.context.identityReads, 0);
+    assert.equal(f.opened.length, 0);
+  }
+});
+
+test("an unauthenticated loopback server cannot grow the pending message queue", async () => {
+  let release;
+  const native = new Promise(resolve => { release = resolve; });
+  const f = await fixture(native);
+  const pending = [f.socket.onmessage({data: JSON.stringify({type: "auth_challenge", nonce: sn})})];
+  await new Promise(setImmediate);
+  for (let i = 0; i < 9; i++) pending.push(f.socket.onmessage({data: "{}"}));
+  assert.equal(f.socket.readyState, 3);
+  release({protocol: 1, key});
+  await Promise.allSettled(pending);
+  assert.equal(f.context.identityReads, 0);
+  assert.equal(f.sent.length, 0);
+});
+
 test("missing or invalid native host fails closed without reading identity", async () => {
   for (const result of [new Error("Missing host"), {}, {protocol: 1, key: "bad"}]) {
     const f = await fixture(result);

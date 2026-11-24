@@ -264,9 +264,28 @@ async function loadAvatarThumbnail(url) {
     const source = new URL(url);
     if (source.protocol !== "https:" || !/(^|\.)(facebook\.com|fbcdn\.net|fbsbx\.com)$/.test(source.hostname)) return null;
     const response = await fetch(source.href, {credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(8000)});
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    if (!blob.type.startsWith("image/") || blob.size > 5 * 1024 * 1024) return null;
+    const limit = 5 * 1024 * 1024;
+    const type = (response.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+    const declared = Number(response.headers.get("Content-Length"));
+    if (!response.ok || !type.startsWith("image/") || !Number.isFinite(declared) || declared < 0 || declared > limit) {
+      await response.body?.cancel();
+      return null;
+    }
+    if (!response.body) return null;
+    // Enforce the bound while downloading, including chunked or compressed bodies.
+    const reader = response.body.getReader(), chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) { await reader.cancel(); return null; }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    const blob = new Blob(chunks, {type});
+    if (!blob.size) return null;
     bitmap = await createImageBitmap(blob);
     const canvas = new OffscreenCanvas(36, 36);
     const context = canvas.getContext("2d");
@@ -1136,6 +1155,7 @@ function connect(i = 0) {
   ws = socket;
   let serverNonce = null, clientNonce = null, key = null, phase = "challenge";
   let messageQueue = Promise.resolve();
+  let queuedMessages = 0;
   const disconnected = () => {
     if (ws !== socket) return;
     clearTimeout(connectTimer);
@@ -1163,6 +1183,15 @@ function connect(i = 0) {
     connectTimer = setTimeout(() => { disconnected(); try { socket.close(1008, "Authentication timeout"); } catch {} }, 15000);
   };
   socket.onmessage = event => {
+    // Reject before retaining data in a promise chain: a fake loopback server can
+    // otherwise flood the extension while Native Messaging/authentication waits.
+    if (ws !== socket) return;
+    if (typeof event.data !== "string" || event.data.length > 131072 || queuedMessages >= 8) {
+      disconnected();
+      try { socket.close(1008, "Bridge message limit exceeded"); } catch {}
+      return;
+    }
+    queuedMessages++;
     return messageQueue = messageQueue.then(async () => {
       if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
       if (typeof event.data !== "string" || event.data.length > 131072) throw new Error("Invalid bridge message");
@@ -1205,7 +1234,7 @@ function connect(i = 0) {
       if (!connectionError) connectionError = "自动认证失败，请确认软件与扩展已同步更新";
       disconnected();
       try { socket.close(1008, "Bridge authentication failed"); } catch {}
-    });
+    }).finally(() => { queuedMessages--; });
   };
   socket.onclose = disconnected;
   socket.onerror = () => {

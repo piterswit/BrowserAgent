@@ -13,3 +13,4 @@
 *.pem
 *.key
 /security-audit
+/0.9.1/

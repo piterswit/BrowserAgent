@@ -6,13 +6,14 @@ from websockets.legacy.client import connect
 from websockets.legacy.server import serve
 from bridge_security import check_origin, authenticate, proof
 
-ORIGIN = "chrome-extension://" + "a" * 32
+from native_bridge import EXTENSION_ORIGIN
+ORIGIN = EXTENSION_ORIGIN.rstrip("/")
 KEY = "ab" * 32
 
 
 class OriginTest(unittest.IsolatedAsyncioTestCase):
     async def test_origin_requires_exact_extension_origin(self):
-        for origin in (None, "null", "https://evil.example", ORIGIN + ".evil.example", ORIGIN + "/"):
+        for origin in (None, "null", "https://evil.example", ORIGIN + ".evil.example", ORIGIN + "/", "chrome-extension://" + "a" * 32):
             headers = Headers([] if origin is None else [("Origin", origin)])
             self.assertEqual((await check_origin("/", headers))[0], 403)
         self.assertIsNone(await check_origin("/", Headers({"Origin": ORIGIN})))
