@@ -328,21 +328,27 @@ async function verifyAvatarAccount(tabId, expectedProfile) {
 }
 
 async function avatarStep(tabId, step) {
+  const phase = {prepare: "打开头像编辑器", upload: "打开图片选择器", save: "保存头像"}[step] || step;
   const results = await chrome.scripting.executeScript({
-    target: {tabId},
+    target: avatarOperation?.documentId ? {tabId, documentIds: [avatarOperation.documentId]} : {tabId},
     func: async name => {
       try {
-        if (!window.__fbAvatar) throw new Error("头像脚本未加载");
+        if (!window.__fbAvatar) throw new Error("头像脚本丢失，页面可能已刷新或跳转；未自动重复上传或保存");
         return {value: await window.__fbAvatar[name]()};
       } catch (error) {
         return {error: error.message};
       }
     },
     args: [step]
+  }).catch(error => {
+    if (/no document|no frame|context.*destroy|frame.*removed/i.test(error.message || "")) {
+      throw new Error(`${phase}失败：任务页面已刷新或跳转，原页面脚本已失效；未自动重复上传或保存`);
+    }
+    throw error;
   });
   const result = results[0]?.result;
   if (!result || result.error) {
-    const error = new Error(result?.error || "头像页面已关闭或跳转");
+    const error = new Error(`${phase}失败：${result?.error || "头像页面已关闭或跳转"}`);
     error.pageError = !!result?.error;
     throw error;
   }
@@ -350,32 +356,7 @@ async function avatarStep(tabId, step) {
 }
 
 async function navigateAvatarTab(tabId, path = "/me") {
-  let listener;
-  let removedListener;
-  let timer;
-  try {
-    await new Promise((resolve, reject) => {
-      listener = (id, info, tab) => {
-        if (id === tabId && info.status === "complete" && /^https:\/\/(?:[a-z0-9-]+\.)?facebook\.com\//i.test(tab?.url || "")) resolve();
-      };
-      chrome.tabs.onUpdated.addListener(listener);
-      removedListener = id => {
-        if (id === tabId) reject(new Error("任务标签页已被关闭"));
-      };
-      chrome.tabs.onRemoved.addListener(removedListener);
-      timer = setTimeout(() => reject(new Error("个人主页加载超时")), 45000);
-      chrome.tabs.update(tabId, {url: `https://www.facebook.com${path}`, active: false}).catch(reject);
-    });
-    const tab = await chrome.tabs.get(tabId);
-    const url = new URL(tab.url);
-    if (!/(^|\.)facebook\.com$/.test(url.hostname) || /\/login|\/checkpoint/.test(url.pathname)) {
-      throw new Error("请先登录 Facebook 并完成账号验证");
-    }
-  } finally {
-    clearTimeout(timer);
-    if (listener) chrome.tabs.onUpdated.removeListener(listener);
-    if (removedListener) chrome.tabs.onRemoved.removeListener(removedListener);
-  }
+  await waitForTaskPage(tabId, `https://www.facebook.com${path}`, {profile: true, timeout: 45000});
 }
 
 async function runAvatarChange(filePath, expectedProfile) {
@@ -387,6 +368,7 @@ async function runAvatarChange(filePath, expectedProfile) {
   let chooserTimer;
   const operationSocket = ws;
   let baseline = null;
+  let phase = "检查图片和账号";
   const report = (success, error = "", confirmed = true, avatarData = null) => {
     if (operationSocket?.readyState === WebSocket.OPEN) {
       secureSend({type: "avatar_result", client_id: clientId, success, error, confirmed, avatar_data: avatarData}, operationSocket);
@@ -397,6 +379,7 @@ async function runAvatarChange(filePath, expectedProfile) {
       throw new Error("头像图片路径无效");
     }
     if (!expectedProfile || !/^https:\/\/www\.facebook\.com\//.test(expectedProfile)) throw new Error("账号尚未识别，请重新连接插件");
+    phase = "打开个人主页";
     const tab = await createProfileTab();
     target = {tabId: tab.id};
     avatarOperation = {tabId: tab.id, id: crypto.randomUUID(), submitted: false};
@@ -407,16 +390,36 @@ async function runAvatarChange(filePath, expectedProfile) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       secureSend({type: "status", status: "change_avatar", client_id: clientId}, ws);
     }
+    phase = "核对登录账号";
     await checkAccount();
     baseline = (await readProfileIdentity(tab.id)).avatar_url;
     await activateTab(tab.id);
+    phase = "连接头像上传组件";
     await chrome.debugger.attach(target, "1.3");
     attached = true;
-    await chrome.scripting.executeScript({target, files: ["fb_ui.js", "change_avatar.js"]});
-    await chrome.scripting.executeScript({target, func: id => { window.__fbAvatar.operationId = id; }, args: [avatarOperation.id]});
+    // Separate injection calls make initialization order explicit. Pin subsequent steps
+    // to this document so a reload cannot silently start a second upload/save flow.
+    phase = "初始化头像脚本";
+    await chrome.scripting.executeScript({target, files: ["fb_ui.js"]});
+    const injected = await chrome.scripting.executeScript({target, files: ["change_avatar.js"]});
+    avatarOperation.documentId = injected[0]?.documentId;
+    const initialized = await chrome.scripting.executeScript({
+      target: avatarOperation.documentId ? {tabId: tab.id, documentIds: [avatarOperation.documentId]} : target,
+      func: options => {
+        if (!window.__fbUI) return {ready: false, reason: "页面识别组件初始化失败"};
+        if (!window.__fbAvatar || !["prepare", "upload", "save"].every(key => typeof window.__fbAvatar[key] === "function")) {
+          return {ready: false, reason: "头像脚本初始化失败或页面已跳转"};
+        }
+        window.__fbAvatar.operationId = options.operationId;
+        return {ready: true};
+      }, args: [{operationId: avatarOperation.id}]
+    });
+    if (!initialized[0]?.result?.ready) throw new Error(`初始化头像功能失败：${initialized[0]?.result?.reason || "页面未返回初始化结果"}`);
+    phase = "打开头像编辑器";
     const mode = await avatarStep(tab.id, "prepare");
     await checkAccount();
     await activateTab(tab.id);
+    phase = "上传头像图片";
     if (mode === "input") {
       const {root} = await chrome.debugger.sendCommand(target, "DOM.getDocument", {depth: 1, pierce: true});
       const {nodeId} = await chrome.debugger.sendCommand(target, "DOM.querySelector", {nodeId: root.nodeId, selector: 'input[data-fb-avatar-upload="true"]'});
@@ -445,6 +448,7 @@ async function runAvatarChange(filePath, expectedProfile) {
     }
     await checkAccount();
     await activateTab(tab.id);
+    phase = "保存头像";
     const saved = await avatarStep(tab.id, "save");
     let avatarData = null;
     if (saved?.confirmed === true) {
@@ -472,7 +476,17 @@ async function runAvatarChange(filePath, expectedProfile) {
       } catch (verificationError) {
         report(true, `已点击保存，无法确认结果: ${verificationError.message}`, false);
       }
-    } else report(false, error.message || String(error));
+    } else {
+      const page = target ? await chrome.tabs.get(target.tabId).catch(() => null) : null;
+      let state = "";
+      if (target && !page) state = "；任务页面已关闭";
+      if (page) {
+        let path = "";
+        try { const url = new URL(page.url); path = url.hostname + url.pathname; } catch {}
+        state = `；页面 ${path}，加载状态 ${page.status || "未知"}${page.discarded ? "，已被浏览器休眠" : ""}${page.frozen ? "，已被冻结" : ""}`;
+      }
+      report(false, `${phase}：${error.message || String(error)}${state}`);
+    }
   } finally {
     clearTimeout(chooserTimer);
     if (chooserListener) chrome.debugger.onEvent.removeListener(chooserListener);
@@ -843,30 +857,82 @@ async function stopActivity() {
   if (activityEpoch === epoch && !avatarBusy && !avatarStarting && !coverOperation) safeSend({type: "status", status: "stop", ...(stats ? {stats} : {})});
 }
 
-async function navigateActivity(tabId, url, epoch) {
+function taskPageState() {
+  const visible = el => !!el?.getClientRects().length && !el.closest('[aria-hidden="true"]') &&
+    getComputedStyle(el).visibility !== "hidden" && getComputedStyle(el).opacity !== "0";
+  return {url: location.href, state: document.readyState,
+    ready: document.readyState !== "loading" && [...document.querySelectorAll('main, [role="main"], [role="navigation"]')].some(visible)};
+}
+
+async function waitForTaskPage(tabId, url, {epoch, profile = false, timeout = 30000} = {}) {
+  const wanted = new URL(url);
   await new Promise((resolve, reject) => {
-    let timer;
+    let timer, pollTimer, settled = false;
+    let lastState = "未收到页面就绪信息";
     const finish = error => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(pollTimer);
       navigationCancels.delete(cancel);
       chrome.tabs.onUpdated.removeListener(updated);
       chrome.tabs.onRemoved.removeListener(removed);
       error ? reject(error) : resolve();
     };
     const cancel = () => finish(Object.assign(new Error("任务已取消"), {name: "AbortError"}));
-    navigationCancels.add(cancel);
-    const updated = (id, info, tab) => {
-      if (id !== tabId || info.status !== "complete") return;
-      if (activityEpoch !== epoch) return finish(new Error("任务已取消"));
-      if (!isFacebook(tab.url)) return finish(new Error("页面已离开 Facebook"));
-      finish();
+    if (epoch !== undefined) navigationCancels.add(cancel);
+    const validPage = value => {
+      if (value === "about:blank" || !value) return false;
+      const current = new URL(value);
+      // Report paths only; URLs can contain account IDs and other private parameters.
+      lastState = `页面 ${current.hostname}${current.pathname}`;
+      if (!isFacebook(value)) { finish(new Error(`页面已离开 Facebook；${lastState}`)); return false; }
+      if (/^\/(login|checkpoint|recover|two_step_verification)(\/|\.php|$)/i.test(current.pathname)) {
+        finish(new Error(`请先登录 Facebook 并完成账号验证；${lastState}`)); return false;
+      }
+      const reels = /^\/reels?\/?$/.test(wanted.pathname) && isReelsUrl(value);
+      if (!profile && !reels && current.pathname.replace(/\/$/, "") !== wanted.pathname.replace(/\/$/, "")) return false;
+      return true;
     };
-    const removed = id => { if (id === tabId) finish(new Error("页面已关闭")); };
+    const updated = (id, info, tab) => {
+      if (id !== tabId) return;
+      if (epoch !== undefined && activityEpoch !== epoch) return cancel();
+      if (info.status === "complete" && validPage(tab?.url)) finish();
+    };
+    const removed = id => { if (id === tabId) finish(new Error("任务标签页已被关闭")); };
+    const poll = async () => {
+      try {
+        if (settled) return;
+        if (epoch !== undefined && activityEpoch !== epoch) return cancel();
+        const tab = await chrome.tabs.get(tabId);
+        if (settled) return;
+        if (validPage(tab.url)) {
+          const result = await chrome.scripting.executeScript({target: {tabId}, func: taskPageState});
+          if (settled) return;
+          const state = result[0]?.result;
+          if (state?.url && validPage(state.url)) {
+            lastState += `，文档 ${state.state}，${state.ready ? "界面已就绪" : "未找到可见主体"}`;
+            if (state.ready) return finish();
+          }
+        }
+      } catch (error) {
+        // A redirect can destroy a probe's execution context. Keep waiting, but
+        // retain the concrete reason if the page never becomes usable.
+        lastState = `读取页面状态失败：${String(error.message || error).slice(0, 160)}`;
+      }
+      if (!settled) pollTimer = setTimeout(poll, 750);
+    };
     chrome.tabs.onUpdated.addListener(updated);
     chrome.tabs.onRemoved.addListener(removed);
-    timer = setTimeout(() => finish(new Error("页面加载超时")), 30000);
-    chrome.tabs.update(tabId, {url}).catch(finish);
+    timer = setTimeout(() => finish(new Error(`${profile ? "个人主页" : "页面"}加载超时（${timeout / 1000}秒）；${lastState}；请检查网络或代理、浏览器休眠状态`)), timeout);
+    chrome.tabs.update(tabId, {url, ...(profile ? {active: false} : {})}).then(() => {
+      if (!settled) pollTimer = setTimeout(poll, 750);
+    }).catch(error => finish(new Error(`打开任务页面失败：${error.message}`)));
   });
+}
+
+async function navigateActivity(tabId, url, epoch) {
+  await waitForTaskPage(tabId, url, {epoch});
 }
 
 function isReelsUrl(url) {

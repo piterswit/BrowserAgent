@@ -35,6 +35,7 @@ function bridge(mode, failure, identityError = "") {
         {id: "test-extension", frameId: 0, url: "https://www.facebook.com/", ...sender}, respond))}},
     scripting: {executeScript: async options => {
       if (options.files) return [];
+      if (options.args?.[0]?.operationId) return [{result: {ready: true}}];
       if (!options.args) return [{result: identityError ? {error: identityError} : identity}];
       const step = options.args[0];
       return [{result: step === failure ? {error: "test failure"} : {value: step === "prepare" ? mode : step === "upload" ? {x: 100, y: 200} : {confirmed: true}}}];
@@ -87,7 +88,7 @@ test("save failure reports an error and releases debugger", async () => {
   const b = bridge("input", "save");
   await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
   assert.equal(b.messages.at(-1).success, false);
-  assert.equal(b.messages.at(-1).error, "test failure");
+  assert.match(b.messages.at(-1).error, /保存头像失败：test failure/);
   assert.equal(b.detached(), 1);
   assert.deepEqual(b.removed, [99]);
 });
@@ -117,6 +118,58 @@ test("script loss before Save remains a failure", async () => {
   b.chrome.scripting.executeScript = async options => options.args?.[0] === "save" ? [] : original(options);
   await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
   assert.equal(b.messages.at(-1).success, false);
+  assert.match(b.messages.at(-1).error, /保存头像.*页面已关闭或跳转/);
+  assert.equal(b.commands.filter(c => c.method === "DOM.setFileInputFiles").length, 1);
+});
+
+for (const reason of ["页面识别组件初始化失败", "头像脚本初始化失败或页面已跳转"]) {
+  test(`avatar initialization failure is diagnosed before upload: ${reason}`, async () => {
+    const b = bridge("input");
+    const execute = b.chrome.scripting.executeScript;
+    b.chrome.scripting.executeScript = async options => options.args?.[0]?.operationId ?
+      [{result: {ready: false, reason}}] : execute(options);
+    await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+    assert.equal(b.messages.at(-1).success, false);
+    assert.ok(b.messages.at(-1).error.includes(reason));
+    assert.equal(b.commands.some(c => c.method === "DOM.setFileInputFiles"), false);
+    assert.equal(b.detached(), 1);
+  });
+}
+
+test("avatar initialization and every operation are pinned to the injected document", async () => {
+  const b = bridge("input"), calls = [];
+  const execute = b.chrome.scripting.executeScript;
+  b.chrome.scripting.executeScript = async options => {
+    calls.push(options);
+    if (options.files) return [{documentId: "profile-document"}];
+    return execute(options);
+  };
+  await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+  assert.equal(b.messages.at(-1).success, true);
+  const files = calls.filter(c => c.files).map(c => Array.from(c.files));
+  assert.deepEqual(files, [["fb_ui.js"], ["change_avatar.js"]]);
+  const steps = calls.filter(c => c.args?.[0]?.operationId || ["prepare", "upload", "save"].includes(c.args?.[0]));
+  assert.ok(steps.length >= 3);
+  for (const step of steps) assert.deepEqual(Array.from(step.target.documentIds), ["profile-document"]);
+});
+
+test("a reload before Save is diagnosed and cannot replay upload or save in the new document", async () => {
+  const b = bridge("input"), execute = b.chrome.scripting.executeScript;
+  let saves = 0;
+  b.chrome.scripting.executeScript = async options => {
+    if (options.files) return [{documentId: "original-document"}];
+    if (options.args?.[0] === "save") {
+      saves++;
+      throw new Error("No document with id original-document in tab with id 99");
+    }
+    return execute(options);
+  };
+  await vm.runInContext('runAvatarChange("D:\\\\photo.jpg", "https://www.facebook.com/profile.php?id=123")', b.context);
+  assert.equal(b.messages.at(-1).success, false);
+  assert.match(b.messages.at(-1).error, /保存头像.*页面已刷新或跳转.*未自动重复/);
+  assert.equal(saves, 1);
+  assert.equal(b.commands.filter(c => c.method === "DOM.setFileInputFiles").length, 1);
+  assert.equal(b.detached(), 1);
 });
 
 test("closed tab after submission remains pending, not an upload failure", async () => {

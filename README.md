@@ -1,6 +1,6 @@
 # BrowserAgent
 
-当前版本：**v0.9.0**。更新内容及使用说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+当前版本：**v0.9.1**。更新内容及使用说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 BrowserAgent 由本地控制软件和 Chrome 扩展 **FB Browser Bridge** 组成，适配 Windows、macOS 和 Linux。软件通过本机 WebSocket 连接浏览器，可对选中的 Facebook 账号执行首页浏览、Reels 浏览、小组浏览、取消已发送的好友请求、随机更换头像、个人主页封面和发布贴文。
 
@@ -80,7 +80,7 @@ python3.11 -m venv .venv
 
 ## 连接账号
 
-Windows 通信组件的文件版本为 `0.9.0.2`，产品显示版本为 `0.9.0`。更新时先关闭主程序，完整解压新包，再运行根目录的 `FB_server.exe`，不要仅覆盖主程序而保留 conf 中的旧通信组件。
+Windows 通信组件的文件版本为 `0.9.1.0`，产品显示版本为 `0.9.1`。更新时先关闭主程序，完整解压新包，再运行根目录的 `FB_server.exe`，不要仅覆盖主程序而保留 conf 中的旧通信组件。
 
 启动软件后会自动注册当前用户的 Native Messaging 组件。扩展自动获取凭据，完成双向认证后连接；无需输入、复制或保存配对码。显示“已连接（自动认证）”后即可使用，后续自动重连。
 
@@ -217,7 +217,7 @@ FB 数字 ID 优先从个人主页 URL 和公开页面元数据读取；页面�
 
 ## 更新与打包
 
-推送 `v0.9.0` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件显示版本一致，否则构建中止。插件数值版本和显示版本均为 `0.9.0`。Windows 发布包为 `FB_Auto_Active_v0.9.0.zip`，包含 `FB_server.exe`、`conf/FB_bridge_host.exe`、`Browser_Extension`、更新说明和构建信息；另提供插件 ZIP 与 SHA-256 校验文件。`conf` 中只打包通信组件，不打包用户的 config.json 或其他配置；首次运行时创建用户配置。
+推送 `v0.9.1` 等版本标签后，GitHub Actions 自动运行 Python 与 JavaScript 回归测试，再生成包含窗口图标和默认头像的 Windows 单文件程序。版本标签必须与软件和插件显示版本一致，否则构建中止。插件数值版本和显示版本均为 `0.9.1`。Windows 发布包为 `FB_Auto_Active_v0.9.1.zip`，包含 `FB_server.exe`、`conf/FB_bridge_host.exe`、`Browser_Extension`、更新说明和构建信息；另提供插件 ZIP 与 SHA-256 校验文件。`conf` 中只打包通信组件，不打包用户的 config.json 或其他配置；首次运行时创建用户配置。
 
 Windows 本机可运行 `python tools/build_windows_release.py` 构建当前版本；先执行本文回归测试。脚本拒绝覆盖同名发布目录，核对软件与插件版本、程序图标、通信组件类型、ZIP 完整性以及插件每个文件与源码的一致性。产物统一放在 `release` 目录。
 

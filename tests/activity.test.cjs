@@ -548,6 +548,92 @@ function background(savedSettings = null) {
     openWindow: () => { normalWindows = [{id: 1}]; windowCreated[0](); }};
 }
 
+async function navigationBackground() {
+  const b = background(); await flush();
+  // The bridge connection timer is unrelated to navigation timer cleanup.
+  vm.runInContext("clearTimeout(connectTimer)", b.context);
+  return b;
+}
+
+test("usable target DOM starts without waiting for all page resources", async () => {
+  const b = await navigationBackground();
+  const baseline = b.removed.size;
+  b.chrome.scripting.executeScript = async () => [{result: {url: b.tabs[0].url, state: "interactive", ready: true}}];
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests')", b.context);
+  await flush(); await b.clock.advance(750); await pending;
+  assert.equal(b.tabs[0].status, "loading");
+  assert.equal(b.removed.size, baseline);
+  assert.equal(b.clock.jobs.size, 0);
+});
+
+test("old page completion and a ready DOM on a different path cannot start a task", async () => {
+  const b = await navigationBackground();
+  let finished = false;
+  b.chrome.scripting.executeScript = async () => [{result: {url: "https://www.facebook.com/", state: "complete", ready: true}}];
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests')", b.context).then(() => { finished = true; });
+  await flush();
+  for (const listener of b.updates) listener(1, {status: "complete"}, {url: "https://www.facebook.com/"});
+  await b.clock.advance(1500); assert.equal(finished, false);
+  for (const listener of b.updates) listener(1, {status: "complete"}, b.tabs[0]);
+  await pending;
+  assert.equal(b.clock.jobs.size, 0);
+});
+
+test("Reels entry may redirect to an individual video without timing out", async () => {
+  const b = await navigationBackground();
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/reel/')", b.context);
+  await flush(); b.tabs[0].url = "https://www.facebook.com/reels/123456";
+  for (const listener of b.updates) listener(1, {status: "complete"}, b.tabs[0]);
+  await pending; assert.equal(b.clock.jobs.size, 0);
+});
+
+for (const path of ["login.php", "checkpoint/", "recover/", "two_step_verification/"]) {
+  test(`navigation identifies authentication redirect ${path} without waiting for timeout`, async () => {
+    const b = await navigationBackground();
+    const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests')", b.context).catch(e => e);
+    await flush(); b.tabs[0].url = "https://www.facebook.com/" + path;
+    await b.clock.advance(750);
+    assert.match((await pending).message, /请先登录.*验证/);
+    assert.equal(b.clock.jobs.size, 0);
+  });
+}
+
+test("timeout includes the last DOM condition and cleans up listeners", async () => {
+  const b = await navigationBackground();
+  const listeners = b.updates.size, removed = b.removed.size;
+  b.chrome.scripting.executeScript = async () => [{result: {url: b.tabs[0].url, state: "interactive", ready: false}}];
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests?private=secret', {timeout: 2000})", b.context).catch(e => e);
+  await flush(); await b.clock.advance(2000);
+  const error = await pending;
+  assert.match(error.message, /2秒.*friends\/requests.*interactive.*未找到可见主体/);
+  assert.equal(error.message.includes("secret"), false);
+  assert.equal(b.updates.size, listeners); assert.equal(b.removed.size, removed);
+  assert.equal(b.clock.jobs.size, 0);
+});
+
+test("a stalled script probe cannot prevent the overall timeout", async () => {
+  const b = await navigationBackground();
+  let release;
+  b.chrome.scripting.executeScript = () => new Promise(resolve => { release = resolve; });
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests', {timeout: 2000})", b.context).catch(e => e);
+  await flush(); await b.clock.advance(2000);
+  assert.match((await pending).message, /加载超时/);
+  release([{result: {url: b.tabs[0].url, ready: true}}]); await flush();
+  assert.equal(b.clock.jobs.size, 0);
+});
+
+test("transient execution context loss is retried only as a read-only readiness check", async () => {
+  const b = await navigationBackground(); let count = 0;
+  b.chrome.scripting.executeScript = async options => {
+    assert.equal(options.func.name, "taskPageState");
+    if (++count === 1) throw new Error("Execution context destroyed");
+    return [{result: {url: b.tabs[0].url, state: "interactive", ready: true}}];
+  };
+  const pending = vm.runInContext("waitForTaskPage(1, 'https://www.facebook.com/friends/requests')", b.context);
+  await flush(); await b.clock.advance(1500); await pending;
+  assert.equal(count, 2); assert.equal(b.clock.jobs.size, 0);
+});
+
 for (const flag of ["avatarBusy", "avatarStarting"]) {
   for (const action of ["scroll30", "auto_group", "auto_custom", "auto_reels", "cancel_friend_requests", "change_avatar"]) {
     test(`${flag}: rejects ${action} without changing the active task epoch`, async () => {

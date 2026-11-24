@@ -64,7 +64,7 @@ jobs:
       - name: Browser flow checks
         shell: pwsh
         run: |
-          foreach ($script in @('identity', 'multilingual', 'post', 'background', 'cover', 'cancel_requests')) {
+          foreach ($script in @('identity', 'multilingual', 'post', 'background', 'cover', 'cancel_requests', 'task_page')) {
             node "tools/check_${script}_browser.cjs"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
