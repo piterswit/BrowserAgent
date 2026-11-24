@@ -207,6 +207,27 @@ async function scenario(port, labels, chooser, denied = false, options = {}) {
   }
 }
 
+async function waitForDevToolsEndpoint(file, {read = fs.promises.readFile, wait = pause, attempts = 150,
+  stopped = () => false} = {}) {
+  let last = "file not ready";
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (stopped()) throw new Error("Fixture browser exited before DevTools became ready");
+    try {
+      const [number, endpoint] = (await read(file, "utf8")).split(/\r?\n/);
+      const port = Number(number);
+      if (Number.isInteger(port) && port > 0 && port <= 65535 && /^\/devtools\/browser\/[\w-]+$/.test(endpoint || "")) {
+        return {port, endpoint};
+      }
+      last = "incomplete DevTools endpoint";
+    } catch (error) {
+      if (!["ENOENT", "EBUSY", "EPERM"].includes(error.code)) throw error;
+      last = error.code;
+    }
+    await wait(100);
+  }
+  throw new Error("Fixture browser DevTools startup timed out: " + last);
+}
+
 async function withBrowser(check) {
   const chrome = [
     process.env.CHROME_PATH,
@@ -228,10 +249,10 @@ async function withBrowser(check) {
   let controller;
   try {
     const activePort = path.join(profile, "DevToolsActivePort");
-    for (let attempt = 0; !fs.existsSync(activePort) && attempt < 150; attempt++) await pause(100);
-    const [portNumber, browserPath] = fs.readFileSync(activePort, "utf8").split(/\r?\n/);
-    const port = Number(portNumber);
-    controller = await connect("ws://127.0.0.1:" + port + browserPath);
+    const {port, endpoint} = await waitForDevToolsEndpoint(activePort, {
+      stopped: () => browser.exitCode !== null || browser.signalCode !== null,
+    });
+    controller = await connect("ws://127.0.0.1:" + port + endpoint);
     await check(port);
   } finally {
     const exited = () => browser.exitCode !== null || browser.signalCode !== null;
@@ -277,7 +298,7 @@ async function main() {
   });
 }
 
-module.exports = {connect, scenario, withBrowser};
+module.exports = {connect, scenario, withBrowser, waitForDevToolsEndpoint};
 if (require.main === module) {
   main().catch(error => { console.error(error); process.exitCode = 1; });
 }
