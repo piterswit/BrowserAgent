@@ -7,13 +7,17 @@ const source = ["fb_ui.js", "cancel_friend_requests.js"].map(name =>
   fs.readFileSync(path.join(__dirname, "../WS Browser Bridge", name), "utf8")).join("\n");
 
 function setup(options) {
-  const realTimer = window.setTimeout.bind(window), wall = Date.now(), started = performance.now();
-  // Slow hosts need real rendering time for both the preload deadline and large
-  // list confirmations. Keep success assertions and production timeouts unchanged.
-  const speed = options.expectTimeLimit || (options.count || 0) >= 100 ? 5 : 20;
-  // Accelerate only this isolated fixture's waits and its matching clock by the same factor.
-  window.setTimeout = (fn, ms) => realTimer(fn, ms / speed);
-  Date.now = () => wall + (performance.now() - started) * speed;
+  const realTimer = window.setTimeout.bind(window), wall = Date.now();
+  // Use one logical clock for scheduled fixture waits, never multiply CPU stalls
+  // on shared CI machines into apparent application timeouts. Five real frames
+  // per logical second still allow scrolling/painting to complete naturally.
+  const speed = 5;
+  let logicalNow = 0;
+  window.setTimeout = (fn, ms = 0, ...args) => {
+    const due = logicalNow + ms;
+    return realTimer(() => { logicalNow = Math.max(logicalNow, due); fn(...args); }, ms / speed);
+  };
+  Date.now = () => wall + logicalNow;
   const labels = options.labels || {sent: "View sent requests", cancel: "Cancel request"};
   document.body.innerHTML = '<button id="entry"></button><main><button id="wrong">Cancel request</button></main>';
   document.querySelector("#entry").textContent = labels.sent;
